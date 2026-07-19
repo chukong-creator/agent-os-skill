@@ -9,10 +9,7 @@
 </p>
 
 <p align="center">
-  <img alt="Agent OS v0.3" src="https://img.shields.io/badge/Agent%20OS-v0.3-0ea5e9">
-  <img alt="Agent Shift v2" src="https://img.shields.io/badge/Agent%20Shift-v2-14b8a6">
-  <img alt="Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-3776ab">
-  <img alt="Platform macOS and Linux" src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-334155">
+  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.3 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
 </p>
 
 Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Review Gate 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。

@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="28" viewBox="0 0 680 28" role="img" aria-label="Agent OS v0.3, Agent Shift v2, Python 3.10+, macOS and Linux">
+  <title>Agent OS v0.3 · Agent Shift v2 · Python 3.10+ · macOS and Linux</title>
+  <defs>
+    <style>
+      text { fill: #fff; font: 11px Verdana, DejaVu Sans, sans-serif; text-anchor: middle; }
+    </style>
+    <clipPath id="b1"><rect width="154" height="28" rx="6"/></clipPath>
+    <clipPath id="b2"><rect x="166" width="164" height="28" rx="6"/></clipPath>
+    <clipPath id="b3"><rect x="342" width="154" height="28" rx="6"/></clipPath>
+    <clipPath id="b4"><rect x="508" width="172" height="28" rx="6"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#b1)">
+    <rect width="84" height="28" fill="#334155"/>
+    <rect x="84" width="70" height="28" fill="#0284c7"/>
+  </g>
+  <text x="42" y="18">Agent OS</text>
+  <text x="119" y="18">v0.3</text>
+
+  <g clip-path="url(#b2)">
+    <rect x="166" width="96" height="28" fill="#334155"/>
+    <rect x="262" width="68" height="28" fill="#0f766e"/>
+  </g>
+  <text x="214" y="18">Agent Shift</text>
+  <text x="296" y="18">v2</text>
+
+  <g clip-path="url(#b3)">
+    <rect x="342" width="76" height="28" fill="#334155"/>
+    <rect x="418" width="78" height="28" fill="#2563eb"/>
+  </g>
+  <text x="380" y="18">Python</text>
+  <text x="457" y="18">3.10+</text>
+
+  <g clip-path="url(#b4)">
+    <rect x="508" width="70" height="28" fill="#334155"/>
+    <rect x="578" width="102" height="28" fill="#475569"/>
+  </g>
+  <text x="543" y="18">platform</text>
+  <text x="629" y="18">macOS · Linux</text>
+</svg>
