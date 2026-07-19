@@ -9,9 +9,12 @@
 ## Git and delivery
 
 - Keep the protected base branch clean and recorded as an Agent Shift baseline before delegation.
+- Choose proportional governance: `L0` for small local reversible work, `L1` for ordinary measurable delivery, and `L2` for production, privacy, credentials, migrations, deletion, payment, irreversible, or external-side-effect work.
 - Give every write-capable Agent an isolated branch and worktree. Never allow two writers in one worktree.
 - Commit approved Work Packages and governance before starting a Run.
 - Merge only the exact Agent commit that passed verification, independent review, and the merge gate.
+- For `L1` and `L2`, freeze the outcome metric, baseline, target, validation window, and evidence source before implementation; record the observed result after merge.
+- For `L2`, require an independent Director Challenge plus the five-question maturity gate.
 
 ## Permissions and evidence
 
@@ -19,6 +22,7 @@
 - Do not push, deploy, publish, access credentials, or perform irreversible actions without explicit authority.
 - Record commands, exit status, observed results, exact commit, changed paths, and residual risks.
 - Classify claims as verified, reviewed, observed, or assumed; never promote an assumption into evidence.
+- Record governance economics honestly. Leave token usage unknown when the runtime does not expose trusted usage.
 
 ## Project-specific verification
 
