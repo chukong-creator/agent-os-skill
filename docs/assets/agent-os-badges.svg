@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="680" height="28" viewBox="0 0 680 28" role="img" aria-label="Agent OS v0.3, Agent Shift v2, Python 3.10+, macOS and Linux">
-  <title>Agent OS v0.3 · Agent Shift v2 · Python 3.10+ · macOS and Linux</title>
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="28" viewBox="0 0 680 28" role="img" aria-label="Agent OS v0.4, Agent Shift v2, Python 3.10+, macOS and Linux">
+  <title>Agent OS v0.4 · Agent Shift v2 · Python 3.10+ · macOS and Linux</title>
   <defs>
     <style>
       text { fill: #fff; font: 11px Verdana, DejaVu Sans, sans-serif; text-anchor: middle; }
@@ -15,7 +15,7 @@
     <rect x="84" width="70" height="28" fill="#0284c7"/>
   </g>
   <text x="42" y="18">Agent OS</text>
-  <text x="119" y="18">v0.3</text>
+  <text x="119" y="18">v0.4</text>
 
   <g clip-path="url(#b2)">
     <rect x="166" width="96" height="28" fill="#334155"/>

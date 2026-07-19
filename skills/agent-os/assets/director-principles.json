@@ -1,15 +1,12 @@
 {
   "policy": "codex-director-principles",
-  "version": 1,
+  "version": 2,
   "mission": "Use AI and computation to increase intelligence, creativity, experience, and durable user or industry value.",
-  "work_package_requires": [
-    "mission_alignment",
-    "priority",
-    "expected_gain",
-    "external_signals",
-    "frontline_signals",
-    "first_principles"
-  ],
+  "work_package_requires_by_level": {
+    "L0": ["expected_gain", "bounded_scope", "delivery_evidence"],
+    "L1": ["mission_alignment", "priority", "expected_gain", "decision_rationale", "outcome_contract"],
+    "L2": ["L1_context", "external_signals", "frontline_signals", "first_principles", "rejected_alternative", "tradeoff", "director_challenge"]
+  },
   "operating_rules": [
     "Set ambitious outcomes and execute through small reversible packages.",
     "Rank priorities explicitly and protect focus.",
@@ -23,6 +20,8 @@
     "evidence-backed outcome",
     "remaining assumptions",
     "priority reassessment",
-    "clear owner and next decision"
+    "clear owner and next decision",
+    "governance level proportional to risk",
+    "outcome contract for L1 and L2"
   ]
 }

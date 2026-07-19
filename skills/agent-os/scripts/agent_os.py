@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent OS v0.3 explainable, recoverable, learning delivery control plane."""
+"""Agent OS v0.4 proportional, outcome-aware delivery control plane."""
 
 from __future__ import annotations
 
@@ -22,10 +22,17 @@ from pathlib import Path
 from typing import Any
 
 
-AGENT_OS_VERSION = "0.3"
-SCHEMA_REVISION = 3
+AGENT_OS_VERSION = "0.4"
+SCHEMA_REVISION = 4
 DEFAULT_LOCK_SECONDS = 7200
 DECISIONS = {"ACCEPTED", "CHANGES_REQUESTED", "BLOCKED_DECISION"}
+GOVERNANCE_LEVELS = {"L0", "L1", "L2"}
+OUTCOME_RESULTS = {"CONFIRMED", "REFUTED", "INCONCLUSIVE"}
+OUTCOME_STATES = {f"OUTCOME_{value}" for value in OUTCOME_RESULTS} | {"OUTCOME_PENDING"}
+L2_RISK_FACTORS = {
+    "production", "privacy", "credentials", "database-migration", "data-deletion",
+    "payment", "irreversible", "external-side-effect",
+}
 FAILURE_CATEGORIES = {
     "goal_contract", "context", "permission", "implementation", "verification",
     "dependency", "runtime", "merge", "external_service", "governance", "unknown",
@@ -523,6 +530,7 @@ def init_db(root: Path, allow_migration: bool = False) -> None:
               baseline_commit TEXT NOT NULL, branch_commit TEXT, evidence_status TEXT,
               started_at TEXT NOT NULL, heartbeat_at TEXT NOT NULL, ended_at TEXT,
               merge_commit TEXT, rollback_commit TEXT, maturity_status TEXT,
+              governance_level TEXT, outcome_status TEXT, economics_status TEXT,
               FOREIGN KEY(package_id) REFERENCES work_packages(id));
             CREATE TABLE IF NOT EXISTS locks(
               work_unit TEXT PRIMARY KEY, run_id TEXT NOT NULL, owner TEXT NOT NULL,
@@ -541,18 +549,27 @@ def init_db(root: Path, allow_migration: bool = False) -> None:
               id TEXT PRIMARY KEY, run_id TEXT NOT NULL, status TEXT NOT NULL,
               risk TEXT NOT NULL, path TEXT NOT NULL, created_at TEXT NOT NULL,
               FOREIGN KEY(run_id) REFERENCES runs(id));
+            CREATE TABLE IF NOT EXISTS outcomes(
+              run_id TEXT PRIMARY KEY, status TEXT NOT NULL, path TEXT NOT NULL,
+              recorded_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES runs(id));
             CREATE TABLE IF NOT EXISTS schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, checksum TEXT NOT NULL);
             """
         )
         columns = {str(row[1]) for row in db.execute("PRAGMA table_info(runs)").fetchall()}
-        for name in ("merge_commit", "rollback_commit", "maturity_status"):
+        for name in (
+            "merge_commit", "rollback_commit", "maturity_status",
+            "governance_level", "outcome_status", "economics_status",
+        ):
             if name not in columns:
                 db.execute(f"ALTER TABLE runs ADD COLUMN {name} TEXT")
+        db.execute("UPDATE runs SET governance_level='L2' WHERE governance_level IS NULL OR governance_level='' ")
+        db.execute("UPDATE runs SET outcome_status='LEGACY' WHERE outcome_status IS NULL OR outcome_status='' ")
+        db.execute("UPDATE runs SET economics_status='NOT_RECORDED' WHERE economics_status IS NULL OR economics_status='' ")
         if not existed or allow_migration:
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations VALUES(?,?,?)",
-                (SCHEMA_REVISION, now_iso(), "agent-os-v0.3-five-question-maturity"),
+                (SCHEMA_REVISION, now_iso(), "agent-os-v0.4-proportional-outcomes-economics"),
             )
             db.execute(f"PRAGMA user_version = {SCHEMA_REVISION}")
 
@@ -577,6 +594,50 @@ def safe_split(value: str) -> tuple[str, str]:
     if not separator or not left.strip() or not right.strip():
         raise ValueError("expected OPTION::REASON")
     return left.strip(), right.strip()
+
+
+def contract_digest(contract: dict[str, Any]) -> str:
+    stable = {key: value for key, value in contract.items() if key != "approved_at"}
+    payload = json.dumps(stable, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def governance_level(contract: dict[str, Any]) -> str:
+    if int(contract.get("schema_revision", 1)) < 4:
+        return "L2"
+    level = str(contract.get("governance", {}).get("level", ""))
+    if level not in GOVERNANCE_LEVELS:
+        raise ValueError(f"invalid governance level: {level or 'missing'}")
+    return level
+
+
+def challenge_path(root: Path, package_id: str) -> Path:
+    return os_dir(root) / "challenges" / f"{package_id}.json"
+
+
+def parse_iso(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+def hashed_evidence(root: Path, value: str) -> dict[str, Any]:
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"evidence file does not exist: {value}")
+    try:
+        reference = str(path.relative_to(root))
+        location = "project"
+    except ValueError:
+        reference = path.name
+        location = "external-user-provided"
+    return {
+        "reference": reference, "location": location, "sha256": sha256(path),
+        "size_bytes": path.stat().st_size, "level": "verified",
+    }
 
 
 def append_event(root: Path, run_id: str | None, actor: str, event: str, summary: str, **extra: Any) -> None:
@@ -631,7 +692,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not (root / ".agent-shift" / "project.json").is_file():
         raise ValueError("Agent Shift must be initialized first")
     target = os_dir(root)
-    for relative in ("policy", "work-packages", "runs", "reviews", "improvements", "runtime"):
+    for relative in ("policy", "work-packages", "runs", "reviews", "improvements", "challenges", "outcomes", "runtime"):
         (target / relative).mkdir(parents=True, exist_ok=True)
     created: list[str] = []
     project_file = target / "project.json"
@@ -645,6 +706,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "protected_paths": [".agent-os", ".agent-shift", ".githooks", ".claude/settings.json", "AGENTS.md", "CLAUDE.md", "secrets"],
             "high_risk_operations": ["deploy", "publish", "credential_access", "private_data", "database_migration", "data_deletion", "destructive_git", "push"],
             "lock_ttl_seconds": DEFAULT_LOCK_SECONDS,
+            "default_governance_level": "L1",
         })
         created.append(str(project_file.relative_to(root)))
     policy = target / "policy" / "evidence-review.json"
@@ -652,9 +714,13 @@ def cmd_init(args: argparse.Namespace) -> int:
         atomic_json(policy, {
             "agent_os_version": AGENT_OS_VERSION,
             "evidence_levels": ["verified", "reviewed", "observed", "assumed"],
-            "acceptance_requires": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "five_question_maturity_pass", "merge_gate_pass", "codex_review"],
+            "acceptance_requires_by_level": {
+                "L0": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "merge_gate_pass", "codex_review"],
+                "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "outcome_contract", "merge_gate_pass", "codex_review"],
+                "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
+            },
             "max_rework_rounds": 3,
-            "legacy_runs_count_toward_v03": False,
+            "legacy_runs_count_toward_v04": False,
         })
         created.append(str(policy.relative_to(root)))
     director_policy = target / "policy" / "director-principles.json"
@@ -667,6 +733,11 @@ def cmd_init(args: argparse.Namespace) -> int:
         source = Path(__file__).resolve().parents[1] / "assets" / "five-question-maturity.json"
         maturity_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         created.append(str(maturity_policy.relative_to(root)))
+    proportional_policy = target / "policy" / "proportional-governance.json"
+    if not proportional_policy.exists():
+        source = Path(__file__).resolve().parents[1] / "assets" / "proportional-governance.json"
+        proportional_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        created.append(str(proportional_policy.relative_to(root)))
     claude = root / ".claude"
     (claude / "agents").mkdir(parents=True, exist_ok=True)
     settings = claude / "settings.json"
@@ -695,7 +766,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     config_path = os_dir(root) / "project.json"
     config = read_json(config_path)
     source_version = str(config.get("agent_os_version", "0.2"))
-    if source_version not in {"0.2", AGENT_OS_VERSION}:
+    if source_version not in {"0.2", "0.3", AGENT_OS_VERSION}:
         raise ValueError(f"unsupported Agent OS upgrade source: {source_version}")
     backup: str | None = None
     db_path = os_dir(root) / "state.db"
@@ -715,6 +786,8 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             source_db.backup(backup_db)
         backup = str(backup_path)
     init_db(root, allow_migration=True)
+    for relative in ("challenges", "outcomes"):
+        (os_dir(root) / relative).mkdir(parents=True, exist_ok=True)
     with db_connect(root) as db:
         integrity = str(db.execute("PRAGMA integrity_check").fetchone()[0])
         foreign_keys = db.execute("PRAGMA foreign_key_check").fetchall()
@@ -724,18 +797,41 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     if not maturity_policy.exists():
         source = Path(__file__).resolve().parents[1] / "assets" / "five-question-maturity.json"
         maturity_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        maturity = read_json(maturity_policy)
+        maturity["agent_os_version"] = AGENT_OS_VERSION
+        maturity["required_governance_level"] = "L2"
+        atomic_json(maturity_policy, maturity)
+    director_policy = os_dir(root) / "policy" / "director-principles.json"
+    if director_policy.is_file():
+        director = read_json(director_policy)
+        director["version"] = max(2, int(director.get("version", 1)))
+        review_requires = list(director.get("review_requires", []))
+        for item in ("governance level proportional to risk", "outcome contract for L1 and L2"):
+            if item not in review_requires:
+                review_requires.append(item)
+        director["review_requires"] = review_requires
+        atomic_json(director_policy, director)
+    proportional_policy = os_dir(root) / "policy" / "proportional-governance.json"
+    if not proportional_policy.exists():
+        source = Path(__file__).resolve().parents[1] / "assets" / "proportional-governance.json"
+        proportional_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     evidence_policy = os_dir(root) / "policy" / "evidence-review.json"
     evidence = read_json(evidence_policy)
     evidence["agent_os_version"] = AGENT_OS_VERSION
-    evidence["acceptance_requires"] = [
-        "evidence_manifest_pass", "verifier_pass", "exact_commit_match",
-        "five_question_maturity_pass", "merge_gate_pass", "codex_review",
-    ]
+    evidence.pop("acceptance_requires", None)
+    evidence["acceptance_requires_by_level"] = {
+        "L0": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "merge_gate_pass", "codex_review"],
+        "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "outcome_contract", "merge_gate_pass", "codex_review"],
+        "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
+    }
     evidence.pop("legacy_runs_count_toward_v02", None)
-    evidence["legacy_runs_count_toward_v03"] = False
+    evidence.pop("legacy_runs_count_toward_v03", None)
+    evidence["legacy_runs_count_toward_v04"] = False
     atomic_json(evidence_policy, evidence)
     config["agent_os_version"] = AGENT_OS_VERSION
     config["schema_revision"] = SCHEMA_REVISION
+    config.setdefault("default_governance_level", "L1")
     atomic_json(config_path, config)
     adapters: list[str] = []
     shift = shift_config(root)
@@ -766,22 +862,45 @@ def cmd_package_create(args: argparse.Namespace) -> int:
     unit = work_unit(root, args.work_unit)
     allow = args.allow or [str(value) for value in unit.get("implementation_paths", [])]
     verify = args.verify or [str(value) for value in unit.get("verify_commands", [])]
+    level = args.governance_level
+    if level not in GOVERNANCE_LEVELS:
+        raise ValueError(f"unsupported governance level: {level}")
+    mission_alignment = args.mission_alignment or ("Low-risk repository-local maintenance" if level == "L0" else "")
+    objective = args.objective or (args.goal if level == "L0" else "")
+    priority = args.priority or ("P2" if level == "L0" else "")
+    selected_approach = args.selected_approach or ("Make the smallest reversible change inside the declared scope" if level == "L0" else "")
+    rationale = args.rationale or ("L0 work is local, reversible, mechanically verified, and has no external side effects" if level == "L0" else "")
+    if level == "L0":
+        outcome_contract = {
+            "mode": "delivery", "required_post_merge": False,
+            "metric": "exact-commit delivery acceptance", "baseline": "not accepted",
+            "target": args.expected_gain, "validation_window": "at Codex review",
+            "evidence_source": "Evidence Manifest, Mechanical Verifier, and Codex Review",
+        }
+    else:
+        outcome_contract = {
+            "mode": "post-merge", "required_post_merge": True,
+            "metric": args.outcome_metric, "baseline": args.outcome_baseline,
+            "target": args.outcome_target, "validation_window": args.outcome_validation_window,
+            "evidence_source": args.outcome_evidence_source,
+        }
     contract = {
         "agent_os_version": AGENT_OS_VERSION, "schema_revision": SCHEMA_REVISION, "id": args.id,
         "project_id": read_json(os_dir(root) / "project.json")["id"],
         "work_unit": args.work_unit, "repo_root": str(unit["repo_root"]),
-        "goal": args.goal, "objective": args.objective, "assumptions": args.assumption,
+        "goal": args.goal, "objective": objective, "assumptions": args.assumption,
+        "governance": {"level": level, "risk_factors": args.risk_factor},
         "director_context": {
-            "mission_alignment": args.mission_alignment,
-            "priority": args.priority,
+            "mission_alignment": mission_alignment,
+            "priority": priority,
             "expected_gain": args.expected_gain,
             "external_signals": args.external_signal,
             "frontline_signals": args.frontline_signal,
             "first_principles": args.first_principles,
         },
         "decision": {
-            "selected_approach": args.selected_approach,
-            "rationale": args.rationale,
+            "selected_approach": selected_approach,
+            "rationale": rationale,
             "alternatives_rejected": [
                 {"option": option, "reason": reason}
                 for option, reason in (safe_split(value) for value in args.alternative)
@@ -793,6 +912,7 @@ def cmd_package_create(args: argparse.Namespace) -> int:
             "external_side_effects": args.external_side_effect,
             "rollback_verification": args.rollback_check or verify,
         },
+        "outcome_contract": outcome_contract,
         "owner": {"role": "engineering-builder", "runtime": "claude-code"},
         "reviewer": {"role": "product-technical-director", "runtime": "codex"},
         "verifier": {"role": "independent-verifier", "runtime": "codex-subagent-or-claude-verifier"},
@@ -851,7 +971,82 @@ def validate_contract(root: Path, contract: dict[str, Any]) -> list[str]:
         recovery = contract.get("recovery", {})
         if "external_side_effects" not in recovery or "rollback_verification" not in recovery:
             problems.append("recovery must declare external_side_effects and rollback_verification")
+    if revision >= 4:
+        try:
+            level = governance_level(contract)
+        except ValueError as error:
+            problems.append(str(error))
+            level = ""
+        risk_factors = contract.get("governance", {}).get("risk_factors", [])
+        if not isinstance(risk_factors, list):
+            problems.append("governance.risk_factors must be a list")
+            risk_factors = []
+        external = contract.get("recovery", {}).get("external_side_effects", [])
+        if level == "L0" and (risk_factors or external):
+            problems.append("L0 forbids declared risk factors and external side effects; use L1 or L2")
+        if external and level != "L2":
+            problems.append("external side effects require L2 governance")
+        high_risk = sorted({str(value) for value in risk_factors} & L2_RISK_FACTORS)
+        if high_risk and level != "L2":
+            problems.append("risk factors require L2 governance: " + ", ".join(high_risk))
+        if level in {"L1", "L2"}:
+            context = contract.get("director_context", {})
+            decision = contract.get("decision", {})
+            for key in ("mission_alignment", "priority"):
+                if not str(context.get(key, "")).strip():
+                    problems.append(f"{level} requires director_context.{key}")
+            for key in ("selected_approach", "rationale"):
+                if not str(decision.get(key, "")).strip():
+                    problems.append(f"{level} requires decision.{key}")
+        if level == "L2":
+            if not contract.get("director_context", {}).get("first_principles"):
+                problems.append("L2 requires at least one first-principles statement")
+            if not contract.get("decision", {}).get("alternatives_rejected"):
+                problems.append("L2 requires at least one rejected alternative")
+            if not contract.get("decision", {}).get("key_tradeoffs"):
+                problems.append("L2 requires at least one explicit tradeoff")
+            if not contract.get("recovery", {}).get("rollback_verification"):
+                problems.append("L2 requires rollback verification")
+        outcome = contract.get("outcome_contract", {})
+        expected_mode = "delivery" if level == "L0" else "post-merge"
+        if outcome.get("mode") != expected_mode:
+            problems.append(f"{level} outcome_contract.mode must be {expected_mode}")
+        for key in ("metric", "baseline", "target", "validation_window", "evidence_source"):
+            value = outcome.get(key)
+            if value is None or not str(value).strip():
+                problems.append(f"outcome_contract.{key} must not be empty")
     return problems
+
+
+def cmd_challenge_record(args: argparse.Namespace) -> int:
+    root = root_path(args.project)
+    contract = load_package(root, args.package)
+    if governance_level(contract) != "L2":
+        raise ValueError("director-challenge is required only for L2 packages")
+    if args.reviewer.strip().lower() in {"codex", "codex-main", "director"}:
+        raise ValueError("L2 Director Challenge reviewer must be independent from Codex main")
+    with db_connect(root) as db:
+        row = db.execute("SELECT status FROM work_packages WHERE id=?", (args.package,)).fetchone()
+    if not row or row["status"] != "DRAFT":
+        raise ValueError("director-challenge requires a DRAFT package")
+    path = challenge_path(root, args.package)
+    document = read_json(path) if path.is_file() else {
+        "agent_os_version": AGENT_OS_VERSION, "work_package": args.package, "reviews": [],
+    }
+    review = {
+        "round": len(document.get("reviews", [])) + 1,
+        "reviewer": args.reviewer, "decision": args.decision,
+        "summary": args.summary, "findings": args.finding,
+        "contract_digest": contract_digest(contract),
+        "evidence": hashed_evidence(root, args.review_file),
+        "reviewed_at": now_iso(),
+    }
+    document.setdefault("reviews", []).append(review)
+    document["latest"] = review
+    atomic_json(path, document)
+    append_event(root, None, args.reviewer, "director_challenge", f"{args.decision} {args.package}", package=args.package)
+    print(json.dumps(review, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_package_ready(args: argparse.Namespace) -> int:
@@ -860,6 +1055,17 @@ def cmd_package_ready(args: argparse.Namespace) -> int:
     problems = validate_contract(root, contract)
     if problems:
         raise ValueError("invalid work package: " + "; ".join(problems))
+    if int(contract.get("schema_revision", 1)) >= 4 and governance_level(contract) == "L2":
+        path = challenge_path(root, args.id)
+        challenge = read_json(path) if path.is_file() else {}
+        latest = challenge.get("latest", {})
+        if latest.get("decision") != "PASS":
+            raise ValueError("L2 package-ready requires a PASS Director Challenge")
+        if latest.get("contract_digest") != contract_digest(contract):
+            raise ValueError("L2 Director Challenge does not match the current Work Package")
+        evidence = latest.get("evidence", {})
+        if not evidence.get("sha256") or evidence.get("level") != "verified":
+            raise ValueError("L2 Director Challenge requires hashed review evidence")
     contract["approved_at"] = now_iso()
     atomic_json(package_path(root, args.id), contract)
     with db_connect(root) as db:
@@ -962,16 +1168,32 @@ def cmd_run_start(args: argparse.Namespace) -> int:
         ],
         "created_at": now_iso(),
     })
+    write_run_artifact(root, args.run, "outcome-contract.json", {
+        "work_package": args.package,
+        "governance_level": governance_level(contract),
+        "contract": contract.get("outcome_contract", {}),
+        "work_package_digest": contract_digest(contract),
+        "created_at": now_iso(),
+    })
+    if int(contract.get("schema_revision", 1)) >= 4 and governance_level(contract) == "L2":
+        challenge = read_json(challenge_path(root, args.package))
+        write_run_artifact(root, args.run, "director-challenge.json", {
+            "work_package": args.package, "latest": challenge.get("latest"),
+            "source_sha256": sha256(challenge_path(root, args.package)),
+            "created_at": now_iso(),
+        })
     timestamp = now_iso()
     expires = (now() + timedelta(seconds=int(read_json(os_dir(root) / "project.json").get("lock_ttl_seconds", DEFAULT_LOCK_SECONDS)))).isoformat(timespec="seconds")
     with db_connect(root) as db:
         db.execute("""INSERT INTO runs(
           id, package_id, status, owner, worktree, branch, baseline_commit,
           branch_commit, evidence_status, started_at, heartbeat_at, ended_at,
-          merge_commit, rollback_commit, maturity_status)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+          merge_commit, rollback_commit, maturity_status, governance_level,
+          outcome_status, economics_status)
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
             args.run, args.package, "BUILDING", args.agent, worktree, branch, baseline,
             None, None, timestamp, timestamp, None, None, None, "INCOMPLETE",
+            governance_level(contract), "NOT_STARTED", "NOT_RECORDED",
         ))
         db.execute("INSERT INTO locks VALUES(?,?,?,?,?,?,?)", (unit_id, args.run, args.agent, worktree, timestamp, timestamp, expires))
         db.execute("UPDATE work_packages SET status='BUILDING', current_run=?, updated_at=? WHERE id=?", (args.run, timestamp, args.package))
@@ -1577,11 +1799,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
     artifacts: list[dict[str, Any]] = [{"id": "git-diff", "type": "git_diff", "level": "verified", "result": "pass", "path": str(diff_path), "sha256": sha256(diff_path)}]
     commands = contract.get("verify_commands") or unit.get("verify_commands", [])
     for index, command in enumerate(commands, 1):
+        started = time.monotonic()
         code, output = run([verification_shell(), "-c", str(command)], worktree, timeout=600)
+        duration_seconds = round(time.monotonic() - started, 3)
         log = evidence / f"verify-{index:02d}.log"
         log.write_text(output + "\n", encoding="utf-8")
         result = "pass" if code == 0 else "fail"
-        checks.append({"id": f"verify-{index:02d}", "type": "command", "level": "verified", "result": result, "command": command, "exit_code": code, "path": str(log), "sha256": sha256(log)})
+        checks.append({"id": f"verify-{index:02d}", "type": "command", "level": "verified", "result": result, "command": command, "exit_code": code, "duration_seconds": duration_seconds, "path": str(log), "sha256": sha256(log)})
     overall = "PASS" if all(item["result"] == "pass" for item in checks) else "FAIL"
     manifest = {
         "agent_os_version": AGENT_OS_VERSION, "run_id": args.run, "work_package": package_id,
@@ -1668,17 +1892,42 @@ def cmd_review(args: argparse.Namespace) -> int:
             raise ValueError(output)
     gate: dict[str, Any] = {}
     maturity: dict[str, Any] = {}
+    level = governance_level(contract)
     if args.decision == "ACCEPTED":
         if manifest.get("result") != "PASS" or verifier.get("result") != "PASS":
             raise ValueError("ACCEPTED requires PASS evidence and verifier")
         if manifest.get("branch_commit") != branch_commit or verifier.get("branch_commit") != branch_commit:
             raise ValueError("ACCEPTED requires exact commit match")
-        maturity, maturity_problems = build_maturity_report(root, args.run)
-        write_run_artifact(root, args.run, "maturity-report.json", maturity)
         with db_connect(root) as db:
-            db.execute("UPDATE runs SET maturity_status=? WHERE id=?", (maturity["result"], args.run))
-        if maturity_problems:
-            raise ValueError("ACCEPTED requires five-question maturity PASS: " + "; ".join(maturity_problems))
+            unresolved = [
+                dict(item) for item in db.execute(
+                    "SELECT * FROM failures WHERE run_id=? AND status!='RESOLVED'", (args.run,)
+                ).fetchall()
+            ]
+        if unresolved:
+            raise ValueError("ACCEPTED requires all failures resolved: " + ", ".join(str(item["id"]) for item in unresolved))
+        revision = int(contract.get("schema_revision", 1))
+        if revision >= 4:
+            outcome_path = artifact_path(root, args.run, "outcome-contract.json")
+            outcome = read_json(outcome_path) if outcome_path.is_file() else {}
+            if outcome.get("contract") != contract.get("outcome_contract", {}):
+                raise ValueError("ACCEPTED requires the frozen Outcome Contract to match the Work Package")
+        if level == "L2":
+            if revision >= 4:
+                challenge = read_json(artifact_path(root, args.run, "director-challenge.json"))
+                latest = challenge.get("latest", {})
+                if latest.get("decision") != "PASS" or latest.get("contract_digest") != contract_digest(contract):
+                    raise ValueError("L2 ACCEPTED requires a matching PASS Director Challenge")
+            maturity, maturity_problems = build_maturity_report(root, args.run)
+            write_run_artifact(root, args.run, "maturity-report.json", maturity)
+            with db_connect(root) as db:
+                db.execute("UPDATE runs SET maturity_status=? WHERE id=?", (maturity["result"], args.run))
+            if maturity_problems:
+                raise ValueError("L2 ACCEPTED requires five-question maturity PASS: " + "; ".join(maturity_problems))
+        elif level != "L2":
+            maturity = {"result": "NOT_REQUIRED", "governance_level": level}
+            with db_connect(root) as db:
+                db.execute("UPDATE runs SET maturity_status='NOT_REQUIRED' WHERE id=?", (args.run,))
         code, output = call_agent_shift(root, "merge-gate", str(root), "--work-unit", str(contract["work_unit"]))
         if code:
             raise ValueError(output)
@@ -1690,11 +1939,12 @@ def cmd_review(args: argparse.Namespace) -> int:
         "round": review_round,
         "work_package": package_id, "run_id": args.run, "reviewer": "codex",
         "decision": args.decision, "summary": args.summary, "required_changes": args.required_change,
+        "governance_level": level,
         "director_context": contract.get("director_context", {}),
         "branch_commit": branch_commit,
         "evidence_manifest_sha256": sha256(manifest_path) if manifest_path.is_file() else None,
         "verifier_result": verifier.get("result"), "maturity_result": maturity.get("result"),
-        "maturity_report_sha256": sha256(artifact_path(root, args.run, "maturity-report.json")) if maturity else None,
+        "maturity_report_sha256": sha256(artifact_path(root, args.run, "maturity-report.json")) if maturity.get("result") not in {None, "NOT_REQUIRED"} else None,
         "merge_gate_result": gate.get("result"), "reviewed_at": now_iso(),
     }
     review_json = os_dir(root) / "reviews" / f"{args.run}-r{review_round}.json"
@@ -1764,6 +2014,130 @@ def cmd_review(args: argparse.Namespace) -> int:
     return 0
 
 
+def load_run_events(root: Path, run_id: str) -> list[dict[str, Any]]:
+    path = run_dir(root, run_id) / "events.jsonl"
+    if not path.is_file():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            events.append(value)
+    return events
+
+
+def build_run_economics(root: Path, run_id: str) -> dict[str, Any]:
+    with db_connect(root) as db:
+        row = active_run(db, run_id)
+        reviews = [dict(item) for item in db.execute("SELECT * FROM reviews WHERE run_id=? ORDER BY created_at", (run_id,)).fetchall()]
+        failures = [dict(item) for item in db.execute("SELECT * FROM failures WHERE run_id=? ORDER BY created_at", (run_id,)).fetchall()]
+    contract = load_package(root, str(row["package_id"]))
+    events = load_run_events(root, run_id)
+    started = parse_iso(str(row["started_at"]))
+    ended = parse_iso(str(row["ended_at"])) or now()
+    total_seconds = round(max(0.0, (ended - started).total_seconds()), 3) if started else None
+    evidence_times = [parse_iso(str(item.get("timestamp"))) for item in events if item.get("event") == "evidence_collected"]
+    evidence_times = [value for value in evidence_times if value is not None]
+    merged_times = [parse_iso(str(item.get("timestamp"))) for item in events if item.get("event") == "merged"]
+    merged_times = [value for value in merged_times if value is not None]
+    first_evidence = min(evidence_times) if evidence_times else None
+    last_evidence = max(evidence_times) if evidence_times else None
+    merged_at = max(merged_times) if merged_times else None
+    implementation_elapsed = round(max(0.0, (first_evidence - started).total_seconds()), 3) if started and first_evidence else None
+    review_elapsed = round(max(0.0, (merged_at - last_evidence).total_seconds()), 3) if merged_at and last_evidence else None
+    overhead_ratio = round(review_elapsed / total_seconds, 4) if review_elapsed is not None and total_seconds else None
+    manifest_path = artifact_path(root, run_id, "evidence/manifest.json")
+    manifest = read_json(manifest_path) if manifest_path.is_file() else {}
+    verification_checks = [item for item in manifest.get("checks", []) if item.get("type") == "command"]
+    verification_duration = round(sum(float(item.get("duration_seconds", 0) or 0) for item in verification_checks), 3)
+    routing_path = routing_state_path(root, run_id)
+    routing = read_json(routing_path) if routing_path.is_file() else {}
+    attempts = [item for item in routing.get("attempts", []) if isinstance(item, dict)]
+    economics = {
+        "agent_os_version": AGENT_OS_VERSION, "run_id": run_id,
+        "work_package": str(row["package_id"]), "governance_level": governance_level(contract),
+        "delivery_status": str(row["status"]), "outcome_status": str(row["outcome_status"] or "NOT_RECORDED"),
+        "measured_at": now_iso(), "measurement_status": "PARTIAL",
+        "timing": {
+            "started_at": row["started_at"], "delivery_ended_at": row["ended_at"],
+            "total_wall_clock_seconds": total_seconds,
+            "time_to_first_evidence_seconds": implementation_elapsed,
+            "last_evidence_to_merge_seconds": review_elapsed,
+            "observed_governance_wall_clock_ratio": overhead_ratio,
+        },
+        "counts": {
+            "events": len(events), "verification_runs": len(evidence_times),
+            "verification_commands": len(verification_checks), "review_rounds": len(reviews),
+            "rework_rounds": sum(1 for item in reviews if item.get("decision") == "CHANGES_REQUESTED"),
+            "failures": len(failures), "resolved_failures": sum(1 for item in failures if item.get("status") == "RESOLVED"),
+            "model_attempts": len(attempts),
+            "provider_fallbacks": sum(1 for item in events if item.get("event") == "routing_fallback"),
+        },
+        "verification_command_seconds": verification_duration,
+        "token_usage": {"input_tokens": None, "output_tokens": None, "source": "unavailable-from-runtime"},
+        "measurement_limits": [
+            "Wall-clock phase intervals include human wait time and are not labor-time measurements.",
+            "The governance ratio is emitted only when both evidence and merge timestamps exist.",
+            "Token usage remains null unless a future runtime exposes trustworthy per-Run usage.",
+        ],
+    }
+    return economics
+
+
+def write_run_economics(root: Path, run_id: str) -> Path:
+    economics = build_run_economics(root, run_id)
+    path = write_run_artifact(root, run_id, "run-economics.json", economics)
+    with db_connect(root) as db:
+        db.execute("UPDATE runs SET economics_status='RECORDED' WHERE id=?", (run_id,))
+    return path
+
+
+def cmd_economics(args: argparse.Namespace) -> int:
+    root = root_path(args.project)
+    path = write_run_economics(root, args.run)
+    print(json.dumps(read_json(path), ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_outcome_check(args: argparse.Namespace) -> int:
+    root = root_path(args.project)
+    with db_connect(root) as db:
+        row = active_run(db, args.run)
+    contract = load_package(root, str(row["package_id"]))
+    if governance_level(contract) == "L0":
+        raise ValueError("L0 uses delivery acceptance and does not enter the post-merge Outcome loop")
+    if row["status"] not in {"OUTCOME_PENDING", "OUTCOME_INCONCLUSIVE"}:
+        raise ValueError(f"outcome-check requires OUTCOME_PENDING or OUTCOME_INCONCLUSIVE, found {row['status']}")
+    evidence = [hashed_evidence(root, value) for value in args.evidence_file]
+    status = f"OUTCOME_{args.result}"
+    outcome_contract = contract.get("outcome_contract", {})
+    receipt = {
+        "agent_os_version": AGENT_OS_VERSION, "run_id": args.run,
+        "work_package": str(row["package_id"]), "governance_level": governance_level(contract),
+        "status": status, "merge_commit": row["merge_commit"],
+        "contract": outcome_contract, "contract_sha256": hashlib.sha256(
+            json.dumps(outcome_contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "observed_value": args.observed_value, "evidence": evidence,
+        "note": args.note, "decision_owner": "codex", "recorded_at": now_iso(),
+    }
+    local_path = write_run_artifact(root, args.run, "outcome-result.json", receipt)
+    with db_connect(root) as db:
+        db.execute("UPDATE runs SET status=?, outcome_status=? WHERE id=?", (status, status, args.run))
+        db.execute("UPDATE work_packages SET status=?, updated_at=? WHERE id=?", (status, now_iso(), row["package_id"]))
+        db.execute(
+            "INSERT OR REPLACE INTO outcomes VALUES(?,?,?,?)",
+            (args.run, status, str(local_path), now_iso()),
+        )
+    append_event(root, args.run, "codex", "outcome_checked", status, observed_value=args.observed_value)
+    write_run_economics(root, args.run)
+    print(json.dumps(receipt | {"local_artifact": str(local_path)}, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_merge(args: argparse.Namespace) -> int:
     root = root_path(args.project)
     with db_connect(root) as db:
@@ -1772,6 +2146,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
             raise ValueError("merge requires ACCEPTED Run")
         package_id = str(row["package_id"])
     contract = load_package(root, package_id)
+    level = governance_level(contract)
     unit_id = str(contract["work_unit"])
     code, output = call_agent_shift(root, "merge", str(root), "--work-unit", unit_id)
     if code:
@@ -1780,15 +2155,25 @@ def cmd_merge(args: argparse.Namespace) -> int:
     code, remove_output = call_agent_shift(root, "worktree-remove", str(root), "--work-unit", unit_id)
     if code:
         raise ValueError(remove_output)
+    post_merge_outcome = int(contract.get("schema_revision", 1)) >= 4 and level in {"L1", "L2"}
+    run_status = "OUTCOME_PENDING" if post_merge_outcome else "MERGED"
+    outcome_status = "OUTCOME_PENDING" if post_merge_outcome else ("NOT_REQUIRED" if level == "L0" else "LEGACY")
     with db_connect(root) as db:
         db.execute("DELETE FROM locks WHERE run_id=?", (args.run,))
-        db.execute("UPDATE runs SET status='MERGED', merge_commit=?, ended_at=? WHERE id=?", (merged.get("merge_commit"), now_iso(), args.run))
-        db.execute("UPDATE work_packages SET status='ACCEPTED', updated_at=? WHERE id=?", (now_iso(), package_id))
+        db.execute(
+            "UPDATE runs SET status=?, merge_commit=?, ended_at=?, outcome_status=? WHERE id=?",
+            (run_status, merged.get("merge_commit"), now_iso(), outcome_status, args.run),
+        )
+        db.execute("UPDATE work_packages SET status=?, updated_at=? WHERE id=?", (run_status, now_iso(), package_id))
     code, baseline_output = call_agent_shift(root, "baseline", str(root), "--work-unit", unit_id)
     if code:
         raise ValueError(baseline_output)
     append_event(root, args.run, "codex", "merged", f"Merged {row['branch']}", merge_commit=merged.get("merge_commit"))
-    print(json.dumps(merged, ensure_ascii=False, indent=2))
+    economics_path = write_run_economics(root, args.run)
+    print(json.dumps(merged | {
+        "run_status": run_status, "outcome_status": outcome_status,
+        "economics_artifact": str(economics_path),
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -1796,8 +2181,9 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     root = root_path(args.project)
     with db_connect(root) as db:
         row = active_run(db, args.run)
-    if row["status"] != "MERGED":
-        raise ValueError("rollback requires a MERGED Run")
+    rollback_ready_states = {"MERGED", "OUTCOME_PENDING", "OUTCOME_CONFIRMED", "OUTCOME_REFUTED", "OUTCOME_INCONCLUSIVE"}
+    if row["status"] not in rollback_ready_states:
+        raise ValueError("rollback requires a delivered Run with no prior rollback")
     if row["rollback_commit"]:
         raise ValueError(f"Run already rolled back at {row['rollback_commit']}")
     merge_commit = str(row["merge_commit"] or "")
@@ -1921,7 +2307,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
             raise ValueError(f"rollback succeeded but receipt commit failed: {output}")
     with db_connect(root) as db:
         db.execute(
-            "UPDATE runs SET status=?, rollback_commit=?, ended_at=? WHERE id=?",
+            "UPDATE runs SET status=?, rollback_commit=?, ended_at=?, outcome_status='CANCELLED_BY_ROLLBACK' WHERE id=?",
             (run_status, rollback_commit, now_iso(), args.run),
         )
         db.execute(
@@ -1932,6 +2318,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
     if code:
         raise ValueError(f"rollback completed but baseline refresh failed: {baseline_output}")
     append_event(root, args.run, "codex", "rolled_back", args.reason, rollback_commit=rollback_commit, result=result)
+    write_run_economics(root, args.run)
     print(json.dumps(receipt, ensure_ascii=False, indent=2))
     return 0 if result == "PASS" else 1
 
@@ -1961,7 +2348,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
             worktree = Path(str(lock["worktree"]))
             dirty = worktree.is_dir() and bool(git(worktree, "status", "--porcelain"))
             findings.append({"work_unit": lock["work_unit"], "run_id": lock["run_id"], "expired": expired, "worktree_exists": worktree.is_dir(), "dirty": dirty})
-        for run_row in db.execute("SELECT * FROM runs WHERE status NOT IN ('MERGED','ROLLED_BACK','CODE_REVERTED_EXTERNAL_PENDING','ROLLBACK_FAILED','CANCELLED')").fetchall():
+        for run_row in db.execute("SELECT * FROM runs WHERE status NOT IN ('MERGED','OUTCOME_PENDING','OUTCOME_CONFIRMED','OUTCOME_REFUTED','OUTCOME_INCONCLUSIVE','ROLLED_BACK','CODE_REVERTED_EXTERNAL_PENDING','ROLLBACK_FAILED','CANCELLED')").fetchall():
             has_lock = db.execute("SELECT 1 FROM locks WHERE run_id=?", (run_row["id"],)).fetchone() is not None
             worktree = Path(str(run_row["worktree"]))
             if not has_lock or not worktree.is_dir():
@@ -2002,7 +2389,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(("PASS" if identity_ok else "FAIL", "adapter project and work-unit identity"))
         except Exception as error:
             checks.append(("FAIL", f"adapter config: {error}"))
-    for relative in (".agent-os/project.json", ".agent-os/policy/evidence-review.json", ".agent-os/policy/director-principles.json", ".agent-os/policy/five-question-maturity.json", ".agent-os/state.db", ".claude/settings.json", ".claude/agents/verifier.md", "AGENTS.md", "CLAUDE.md"):
+    for relative in (".agent-os/project.json", ".agent-os/policy/evidence-review.json", ".agent-os/policy/director-principles.json", ".agent-os/policy/five-question-maturity.json", ".agent-os/policy/proportional-governance.json", ".agent-os/state.db", ".claude/settings.json", ".claude/agents/verifier.md", "AGENTS.md", "CLAUDE.md"):
         checks.append(("PASS" if (root / relative).is_file() else "FAIL", relative))
     try:
         config = read_json(os_dir(root) / "project.json")
@@ -2013,9 +2400,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     try:
         with db_connect(root) as db:
             run_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(runs)").fetchall()}
-            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status"} <= run_columns else "FAIL", "v0.3 Run database schema"))
+            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.4 Run database schema"))
             tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            checks.append(("PASS" if {"failures", "improvements"} <= tables else "FAIL", "v0.3 failure and learning tables"))
+            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.4 failure, learning, and outcome tables"))
             for package in db.execute("SELECT * FROM work_packages").fetchall():
                 problems = validate_contract(root, load_package(root, package["id"]))
                 checks.append(("PASS" if not problems else "FAIL", f"package {package['id']}: {problems or package['status']}"))
@@ -2023,15 +2410,18 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 expired = datetime.fromisoformat(lock["expires_at"]) < now()
                 checks.append(("WARN" if expired else "PASS", f"lock {lock['work_unit']} for {lock['run_id']} {'expired' if expired else 'active'}"))
                 checks.append(("PASS" if Path(lock["worktree"]).is_dir() else "FAIL", f"lock worktree {lock['worktree']}"))
-            for run_row in db.execute("SELECT * FROM runs WHERE status IN ('READY_FOR_REVIEW','CODEX_REVIEWING','ACCEPTED','MERGED')").fetchall():
+            for run_row in db.execute("SELECT * FROM runs WHERE status IN ('READY_FOR_REVIEW','CODEX_REVIEWING','ACCEPTED','MERGED','OUTCOME_PENDING','OUTCOME_CONFIRMED','OUTCOME_REFUTED','OUTCOME_INCONCLUSIVE')").fetchall():
                 manifest = os_dir(root) / "runs" / run_row["id"] / "evidence" / "manifest.json"
                 checks.append(("PASS" if manifest.is_file() else "FAIL", f"run {run_row['id']} Evidence Manifest"))
                 contract = load_package(root, str(run_row["package_id"]))
                 if int(contract.get("schema_revision", 1)) >= SCHEMA_REVISION:
-                    for filename in ("decision-trace.json", "permission-manifest.json", "rollback-plan.json"):
+                    for filename in ("decision-trace.json", "permission-manifest.json", "rollback-plan.json", "outcome-contract.json"):
                         checks.append(("PASS" if artifact_path(root, run_row["id"], filename).is_file() else "FAIL", f"run {run_row['id']} {filename}"))
-                    if run_row["status"] in {"ACCEPTED", "MERGED"}:
+                    level = governance_level(contract)
+                    if level == "L2" and run_row["status"] in {"ACCEPTED", "MERGED", "OUTCOME_PENDING", "OUTCOME_CONFIRMED", "OUTCOME_REFUTED", "OUTCOME_INCONCLUSIVE"}:
                         checks.append(("PASS" if run_row["maturity_status"] == "PASS" else "FAIL", f"run {run_row['id']} five-question maturity"))
+                    if run_row["status"] in {"MERGED", "OUTCOME_PENDING", "OUTCOME_CONFIRMED", "OUTCOME_REFUTED", "OUTCOME_INCONCLUSIVE"}:
+                        checks.append(("PASS" if run_row["economics_status"] == "RECORDED" else "FAIL", f"run {run_row['id']} governance economics"))
     except Exception as error:
         checks.append(("FAIL", f"state database: {error}"))
     code, output = call_agent_shift(root, "doctor", str(root))
@@ -2122,7 +2512,8 @@ def parser() -> argparse.ArgumentParser:
     sub = result.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init"); init.add_argument("project"); init.add_argument("--id", required=True); init.add_argument("--name", required=True); init.add_argument("--mission", required=True); init.set_defaults(func=cmd_init)
     upgrade = sub.add_parser("upgrade"); upgrade.add_argument("project"); upgrade.set_defaults(func=cmd_upgrade)
-    package = sub.add_parser("package-create"); package.add_argument("project"); package.add_argument("--id", required=True); package.add_argument("--work-unit", required=True); package.add_argument("--goal", required=True); package.add_argument("--objective", required=True); package.add_argument("--mission-alignment", required=True); package.add_argument("--priority", choices=("P0", "P1", "P2", "P3"), required=True); package.add_argument("--expected-gain", required=True); package.add_argument("--external-signal", action="append", default=[]); package.add_argument("--frontline-signal", action="append", default=[]); package.add_argument("--first-principles", action="append", default=[]); package.add_argument("--selected-approach", required=True); package.add_argument("--rationale", required=True); package.add_argument("--alternative", action="append", default=[]); package.add_argument("--tradeoff", action="append", default=[]); package.add_argument("--external-side-effect", action="append", default=[]); package.add_argument("--rollback-check", action="append", default=[]); package.add_argument("--allow", nargs="*", default=[]); package.add_argument("--deny", nargs="*", default=[]); package.add_argument("--verify", nargs="*", default=[]); package.add_argument("--verified", action="append", default=[]); package.add_argument("--reviewed", action="append", default=[]); package.add_argument("--observed", action="append", default=[]); package.add_argument("--assumption", action="append", default=[]); package.add_argument("--constraint", action="append", default=[]); package.add_argument("--stop", action="append", default=["scope expansion", "credential or irreversible action", "three failed rework rounds"]); package.add_argument("--max-runs", type=int, default=4); package.add_argument("--max-rework", type=int, default=3); package.set_defaults(func=cmd_package_create)
+    package = sub.add_parser("package-create"); package.add_argument("project"); package.add_argument("--id", required=True); package.add_argument("--work-unit", required=True); package.add_argument("--governance-level", choices=sorted(GOVERNANCE_LEVELS), default="L1"); package.add_argument("--risk-factor", action="append", default=[]); package.add_argument("--goal", required=True); package.add_argument("--objective"); package.add_argument("--mission-alignment"); package.add_argument("--priority", choices=("P0", "P1", "P2", "P3")); package.add_argument("--expected-gain", required=True); package.add_argument("--external-signal", action="append", default=[]); package.add_argument("--frontline-signal", action="append", default=[]); package.add_argument("--first-principles", action="append", default=[]); package.add_argument("--selected-approach"); package.add_argument("--rationale"); package.add_argument("--alternative", action="append", default=[]); package.add_argument("--tradeoff", action="append", default=[]); package.add_argument("--external-side-effect", action="append", default=[]); package.add_argument("--rollback-check", action="append", default=[]); package.add_argument("--outcome-metric"); package.add_argument("--outcome-baseline"); package.add_argument("--outcome-target"); package.add_argument("--outcome-validation-window"); package.add_argument("--outcome-evidence-source"); package.add_argument("--allow", nargs="*", default=[]); package.add_argument("--deny", nargs="*", default=[]); package.add_argument("--verify", nargs="*", default=[]); package.add_argument("--verified", action="append", default=[]); package.add_argument("--reviewed", action="append", default=[]); package.add_argument("--observed", action="append", default=[]); package.add_argument("--assumption", action="append", default=[]); package.add_argument("--constraint", action="append", default=[]); package.add_argument("--stop", action="append", default=["scope expansion", "credential or irreversible action", "three failed rework rounds"]); package.add_argument("--max-runs", type=int, default=4); package.add_argument("--max-rework", type=int, default=3); package.set_defaults(func=cmd_package_create)
+    challenge = sub.add_parser("director-challenge"); challenge.add_argument("project"); challenge.add_argument("--package", required=True); challenge.add_argument("--reviewer", required=True); challenge.add_argument("--decision", choices=("PASS", "CHANGES_REQUESTED"), required=True); challenge.add_argument("--summary", required=True); challenge.add_argument("--finding", action="append", default=[]); challenge.add_argument("--review-file", required=True); challenge.set_defaults(func=cmd_challenge_record)
     ready = sub.add_parser("package-ready"); ready.add_argument("project"); ready.add_argument("--id", required=True); ready.set_defaults(func=cmd_package_ready)
     start = sub.add_parser("run-start"); start.add_argument("project"); start.add_argument("--package", required=True); start.add_argument("--run", required=True); start.add_argument("--agent", choices=("claude", "claude-subagent", "codex-subagent"), default="claude"); start.set_defaults(func=cmd_run_start)
     heartbeat = sub.add_parser("heartbeat"); heartbeat.add_argument("project"); heartbeat.add_argument("--run", required=True); heartbeat.add_argument("--actor", default="claude", choices=("claude", "codex", "system")); heartbeat.set_defaults(func=cmd_heartbeat)
@@ -2140,6 +2531,8 @@ def parser() -> argparse.ArgumentParser:
     maturity = sub.add_parser("maturity-report"); maturity.add_argument("project"); maturity.add_argument("--run", required=True); maturity.set_defaults(func=cmd_maturity_report)
     review = sub.add_parser("review"); review.add_argument("project"); review.add_argument("--run", required=True); review.add_argument("--decision", choices=sorted(DECISIONS), required=True); review.add_argument("--summary", required=True); review.add_argument("--required-change", action="append", default=[]); review.set_defaults(func=cmd_review)
     merge = sub.add_parser("merge"); merge.add_argument("project"); merge.add_argument("--run", required=True); merge.set_defaults(func=cmd_merge)
+    outcome = sub.add_parser("outcome-check"); outcome.add_argument("project"); outcome.add_argument("--run", required=True); outcome.add_argument("--result", choices=sorted(OUTCOME_RESULTS), required=True); outcome.add_argument("--observed-value", required=True); outcome.add_argument("--evidence-file", action="append", required=True); outcome.add_argument("--note", required=True); outcome.set_defaults(func=cmd_outcome_check)
+    economics = sub.add_parser("economics"); economics.add_argument("project"); economics.add_argument("--run", required=True); economics.set_defaults(func=cmd_economics)
     rollback = sub.add_parser("rollback"); rollback.add_argument("project"); rollback.add_argument("--run", required=True); rollback.add_argument("--reason", required=True); rollback.add_argument("--execute", action="store_true"); rollback.add_argument("--ack-external", action="store_true"); rollback.set_defaults(func=cmd_rollback)
     release = sub.add_parser("lock-release"); release.add_argument("project"); release.add_argument("--work-unit", required=True); release.add_argument("--reason", required=True); release.set_defaults(func=cmd_lock_release)
     recover = sub.add_parser("recover"); recover.add_argument("project"); recover.set_defaults(func=cmd_recover)

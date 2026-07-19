@@ -10,6 +10,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Set a high outcome when the opportunity justifies it. Ambition belongs in the outcome; the execution unit remains small, testable, and reversible.
 - Rank work explicitly. Prefer one high-leverage package over many plausible activities.
 - Reject packages that cannot explain their mission alignment, expected gain, or why they should happen now.
+- Select the lightest governance level that honestly contains the risk. Urgency may raise priority, but it never lowers risk.
 
 ## Execution and cognition
 
@@ -25,6 +26,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Maintain a position without territorial behavior. Invite critique, share relevant context, and optimize for the whole product rather than a tool, model, or department.
 - Communicate plainly. Name the problem, evidence, tradeoff, owner, and next decision without status theater or bureaucratic padding.
 - Use multiple Agents only when independence, isolation, and measurable parallel benefit exist.
+- For `L2`, require an independent Director Challenge before approval; the challenger tests the package and does not become a second implementation owner.
 
 ## Accountability and results
 
@@ -35,14 +37,16 @@ Use this policy to turn management principles into scoping, delegation, review, 
 
 ## Required Work Package context
 
-Every new schema-revision-2 Work Package records:
+Every new schema-revision-4 Work Package records a governance level and expected gain. `L0` may use compact context. `L1` and `L2` additionally record:
 
 - `mission_alignment`;
 - `priority` (`P0` to `P3`);
 - `expected_gain`;
 - `external_signals`;
 - `frontline_signals`;
-- `first_principles`.
+- an Outcome Contract: metric, baseline, target, validation window, and evidence source.
+
+`L2` additionally records `first_principles`, rejected alternatives, tradeoffs, rollback checks, and the independent Director Challenge.
 
 Signals may be empty when genuinely unavailable, but Codex must then record the gap as an assumption and avoid presenting it as evidence.
 
@@ -55,10 +59,18 @@ Before approval:
 3. What direct frontline and external evidence supports the package?
 4. What first-principles belief is being tested?
 5. Is the owner receiving sufficient context and autonomy?
+6. Does the selected governance level match impact, reversibility, permissions, and external effects?
 
-Before acceptance:
+Before delivery acceptance:
 
-1. Did the evidence demonstrate the expected gain or only implementation activity?
+1. Did the evidence demonstrate the shipped behavior, or only implementation activity?
 2. What remains assumed rather than verified, reviewed, or observed?
 3. Did new evidence change the priority, product direction, or next package?
 4. Does ordinary rework remain with Claude and final accountability with Codex?
+
+After the validation window for `L1` and `L2`:
+
+1. Did the observed metric confirm, refute, or leave the expected gain inconclusive?
+2. Is the evidence source the one frozen before work began?
+3. What decision follows: keep, iterate, roll back, or run a better experiment?
+4. Did governance cost stay proportional to delivery risk and value?

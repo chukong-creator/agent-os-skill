@@ -1,6 +1,7 @@
 {
-  "agent_os_version": "0.3",
+  "agent_os_version": "0.4",
   "policy_id": "five-question-maturity",
+  "required_governance_level": "L2",
   "questions": [
     "why_this_action",
     "permissions_used",

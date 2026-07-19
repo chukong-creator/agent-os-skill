@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Disposable end-to-end acceptance test for Agent OS v0.3."""
+"""Disposable regression test for the v0.3 delivery behaviors on Agent OS v0.4."""
 
 from __future__ import annotations
 
@@ -51,7 +51,7 @@ def bootstrap(root: Path) -> None:
     write(root / "app.txt", "base\n")
     write(root / ".gitignore", ".agent-shift/*\n!.agent-shift/project.json\n.agent-os/state.db*\n.agent-os/events.jsonl\n.agent-os/runs/\n.agent-os/runtime/\n")
     commit(root, "baseline")
-    call([AGENT_SHIFT, "init", str(root), "--name", "Agent OS v0.3 Test"], root)
+    call([AGENT_SHIFT, "init", str(root), "--name", "Agent OS v0.4 Regression Test"], root)
     shift_config = json.loads((root / ".agent-shift/project.json").read_text(encoding="utf-8"))
     unit = shift_config["work_units"][0]
     unit["implementation_paths"] = ["app.txt"]
@@ -124,11 +124,11 @@ def test_migration(parent: Path) -> None:
         CREATE TABLE reviews(id TEXT PRIMARY KEY, package_id TEXT NOT NULL, run_id TEXT NOT NULL, decision TEXT NOT NULL, branch_commit TEXT NOT NULL, evidence_sha256 TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
     output = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
-    assert output["from"] == "0.2" and output["to"] == "0.3" and output["database_backup"]
+    assert output["from"] == "0.2" and output["to"] == "0.4" and output["database_backup"]
     with sqlite3.connect(os_root / "state.db") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
         columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
-        assert {"merge_commit", "rollback_commit", "maturity_status"} <= columns
+        assert {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= columns
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     again = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
     assert again["idempotent"] is True and again["database_backup"] is None
@@ -139,9 +139,9 @@ def test_delivery_and_rollback(parent: Path) -> None:
     bootstrap(root)
     route_config = routing_fixture(parent)
     call([AGENT_OS, "init", str(root), "--id", "test", "--name", "Test", "--mission", "Prove trustworthy delivery"], root)
-    commit(root, "governance: agent os v0.3")
+    commit(root, "governance: agent os v0.4")
     call([
-        AGENT_OS, "package-create", str(root), "--id", "wp-001", "--work-unit", "default",
+        AGENT_OS, "package-create", str(root), "--id", "wp-001", "--work-unit", "default", "--governance-level", "L0",
         "--goal", "Ship a verified change", "--objective", "Change app.txt from base to success",
         "--mission-alignment", "Proves the complete governed loop", "--priority", "P1",
         "--expected-gain", "A reproducible recovery contract", "--frontline-signal", "Disposable Git evidence",
@@ -194,7 +194,7 @@ def test_delivery_and_rollback(parent: Path) -> None:
     assert state["status"] == "ROLLED_BACK" and state["rollback_commit"] == receipt["rollback_commit"]
 
     call([
-        AGENT_OS, "package-create", str(root), "--id", "wp-rework", "--work-unit", "default",
+        AGENT_OS, "package-create", str(root), "--id", "wp-rework", "--work-unit", "default", "--governance-level", "L0",
         "--goal", "Exercise explicit review rework", "--objective", "Move an accepted Run through Claude rework",
         "--mission-alignment", "Proves role clarity after Codex findings", "--priority", "P1",
         "--expected-gain", "A tested Review-to-Builder return path", "--selected-approach", "Reuse one Agent worktree",
@@ -239,15 +239,25 @@ def test_external_rollback_guard(parent: Path) -> None:
     root = parent / "external-guard"
     bootstrap(root)
     call([AGENT_OS, "init", str(root), "--id", "external", "--name", "External", "--mission", "Protect external state"], root)
-    commit(root, "governance: agent os v0.3")
+    commit(root, "governance: agent os v0.4")
     call([
-        AGENT_OS, "package-create", str(root), "--id", "wp-external", "--work-unit", "default",
+        AGENT_OS, "package-create", str(root), "--id", "wp-external", "--work-unit", "default", "--governance-level", "L2", "--risk-factor", "external-side-effect",
         "--goal", "Guard rollback authority", "--objective", "Prove external effects require acknowledgement",
         "--mission-alignment", "Prevents false recovery claims", "--priority", "P1",
-        "--expected-gain", "Safer operational rollback", "--selected-approach", "Declare the side effect before execution",
+        "--expected-gain", "Safer operational rollback", "--first-principles", "Git cannot prove recovery outside Git", "--selected-approach", "Declare the side effect before execution",
         "--rationale", "Git cannot reverse external systems", "--alternative", "Assume Git is enough::It creates a false recovery claim",
-        "--external-side-effect", "test deployment marker", "--allow", "app.txt",
+        "--tradeoff", "More ceremony for external-state honesty", "--external-side-effect", "test deployment marker",
+        "--outcome-metric", "external rollback guard", "--outcome-baseline", "unacknowledged external effects can be misreported",
+        "--outcome-target", "external recovery remains explicitly pending", "--outcome-validation-window", "during rollback test",
+        "--outcome-evidence-source", "rollback receipt", "--allow", "app.txt",
         "--verify", "grep -q success app.txt", "--rollback-check", "grep -q base app.txt",
+    ], root)
+    review_file = root / "l2-director-challenge.md"
+    write(review_file, "# Independent challenge\n\nPASS: external recovery stays separate from Git.\n")
+    call([
+        AGENT_OS, "director-challenge", str(root), "--package", "wp-external",
+        "--reviewer", "test-independent-reviewer", "--decision", "PASS",
+        "--summary", "The package preserves external recovery honesty", "--review-file", str(review_file),
     ], root)
     call([AGENT_OS, "package-ready", str(root), "--id", "wp-external"], root)
     commit(root, "plan: approve external guard")
@@ -279,7 +289,7 @@ def test_runtime_provider_fallback(parent: Path) -> None:
     call([AGENT_OS, "init", str(root), "--id", "runtime", "--name", "Runtime", "--mission", "Recover from provider exhaustion"], root)
     commit(root, "governance: runtime fallback")
     call([
-        AGENT_OS, "package-create", str(root), "--id", "wp-runtime", "--work-unit", "default",
+        AGENT_OS, "package-create", str(root), "--id", "wp-runtime", "--work-unit", "default", "--governance-level", "L0",
         "--goal", "Recover from exhausted provider", "--objective", "Start the next authorized Builder profile once",
         "--mission-alignment", "Prevents unattended Runs from stalling", "--priority", "P1",
         "--expected-gain", "Finite automatic recovery", "--selected-approach", "Use a role-specific fallback chain",

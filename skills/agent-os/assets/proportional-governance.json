@@ -1,0 +1,55 @@
+{
+  "agent_os_version": "0.4",
+  "policy_id": "proportional-governance",
+  "default_level": "L1",
+  "levels": {
+    "L0": {
+      "purpose": "Low-risk, repository-local, reversible delivery",
+      "forbids": ["risk_factors", "external_side_effects"],
+      "requires": [
+        "single_writer",
+        "scoped_paths",
+        "exact_commit_evidence",
+        "mechanical_verifier",
+        "no_unresolved_failures",
+        "codex_review",
+        "merge_gate"
+      ],
+      "post_merge_outcome_required": false,
+      "five_question_maturity_required": false
+    },
+    "L1": {
+      "purpose": "Normal product and technical delivery",
+      "requires": [
+        "L0_controls",
+        "mission_alignment",
+        "decision_rationale",
+        "outcome_contract",
+        "governance_economics"
+      ],
+      "post_merge_outcome_required": true,
+      "five_question_maturity_required": false
+    },
+    "L2": {
+      "purpose": "High-impact, external-side-effect, or hard-to-reverse delivery",
+      "requires": [
+        "L1_controls",
+        "first_principles",
+        "rejected_alternative",
+        "explicit_tradeoff",
+        "rollback_verification",
+        "independent_director_challenge",
+        "learning_assessment",
+        "five_question_maturity"
+      ],
+      "post_merge_outcome_required": true,
+      "five_question_maturity_required": true
+    }
+  },
+  "invariants": [
+    "Priority expresses urgency and never lowers governance risk.",
+    "Every level preserves one writer, exact Git identity, mechanical verification, and Codex acceptance.",
+    "External side effects always require L2.",
+    "Missing telemetry stays null and is never estimated as verified fact."
+  ]
+}

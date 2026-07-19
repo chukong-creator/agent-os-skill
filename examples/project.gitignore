@@ -13,3 +13,5 @@
 !.agent-os/reviews/**
 !.agent-os/improvements/
 !.agent-os/improvements/**
+!.agent-os/challenges/
+!.agent-os/challenges/**

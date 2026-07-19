@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.3 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
+  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.4 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
 </p>
 
 <p align="center">
   <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
 </p>
 
-Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Review Gate 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。
+Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。
 
 > **Codex** 是产品与技术总监：定义目标、边界、验收标准并作最终决策。
 >
@@ -20,7 +20,7 @@ Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 A
 >
 > **Git** 是版本神经系统；**Evidence** 是组织记忆；**Agent OS** 是治理与恢复层。
 
-当前版本：**Agent OS v0.3 + Agent Shift protocol v2**。
+当前版本：**Agent OS v0.4 + Agent Shift protocol v2**。
 
 ## 30 秒看懂
 
@@ -32,23 +32,23 @@ Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 A
 | Mechanical Verifier | 校验 Manifest、精确 Commit 与 Evidence 哈希 | 把机械 PASS 当作产品验收 |
 | Read-only Claude Reviewer（可选） | 在配置模型路由后做语义审查并向 Codex 提供 finding | 修改实现或作最终决策 |
 | Git + Agent Shift | 固化基线、隔离写入、记录交接、执行 Merge Gate | 用聊天记录代替版本事实 |
-| Agent OS | 管工作包、权限、证据、路由、回滚与学习 | 保存密钥或绕过用户授权 |
+| Agent OS | 管分级、工作包、权限、证据、结果、成本、回滚与学习 | 保存密钥、伪造成本或绕过用户授权 |
 
 ```mermaid
 flowchart TD
     H["Human<br/>使命 · 优先级 · 授权"] --> C["Codex Director<br/>产品判断 · 技术边界 · 最终验收"]
-    C --> WP["Work Package<br/>目标 · 范围 · 验收标准 · 回滚检查"]
+    C --> WP["Work Package<br/>L0/L1/L2 · 目标 · 范围 · 验收标准"]
     WP --> S["Agent Shift<br/>Git Baseline · Branch · Isolated Worktree"]
     S --> B["Claude Builder<br/>实现与普通返工"]
     B --> E["Evidence<br/>精确 Commit · Diff · Checks · Artifacts"]
     E --> MV["Mechanical Verifier<br/>Manifest · Commit · Hash"]
     E -. "可选角色路由" .-> RV["Read-only Claude Reviewer<br/>语义审查 · Findings"]
-    MV --> L["Learning Assessment<br/>本轮证据 · 改进理由"]
-    L --> D{"Codex Decision"}
+    MV --> D{"Codex Decision"}
     RV -. "审查信号" .-> D
     D -->|"CHANGES_REQUESTED"| B
     D -->|"ACCEPTED"| M["Merge Gate<br/>no-ff merge · receipt"]
-    M --> RB["Rollback<br/>精确 revert · recovery receipt"]
+    M --> O["Outcome + Economics<br/>收益回访 · 治理成本"]
+    O --> RB["Rollback<br/>精确 revert · recovery receipt"]
 ```
 
 ## 为什么不是一段更长的 Prompt
@@ -67,13 +67,26 @@ flowchart TD
 | 能力 | Agent OS 如何实现 | 你得到什么 |
 |---|---|---|
 | **目标契约** | Work Package 固化目标、范围、验收标准、预期增益和回滚检查 | Agent 不会把“做了很多”当作“拿到结果” |
+| **风险分级** | L0 / L1 / L2 按影响、可逆性、权限和外部副作用选择门禁 | 小改动不过度治理，高风险任务不偷工减料 |
 | **Git 基线** | Agent Shift 记录可审计 baseline，保护主分支 | 每次工作都从已知状态出发 |
 | **隔离执行** | 一包一 Branch / Worktree，canonical worktree 单写者锁 | 并行协作不互相覆盖 |
 | **过程可见** | 状态、job update、事件流和路由状态持续落盘 | 随时知道 Claude 在做什么、卡在哪里 |
 | **证据验收** | 精确 Commit、允许路径、验证命令、产物与机械 verifier | Codex 根据事实验收，不凭自报 |
 | **返工闭环** | `CHANGES_REQUESTED` 生成结构化 finding，原 Builder 继续返工 | 角色不漂移，责任不断裂 |
 | **模型路由** | Builder / Reviewer 独立 profile，显式终态触发有限 fallback | 某个模型额度用光时不会无限卡住 |
-| **恢复与学习** | 精确 revert、恢复 receipt、maturity report、improvement proposal | 失败可恢复，下一次有依据地变好 |
+| **收益闭环** | L1/L2 冻结指标、基线、目标、验证窗口和证据源，合并后回访 | 区分“代码交付”与“预期收益真的发生” |
+| **治理记账** | 自动计算时长、证据等待、验证耗时、重试与 fallback；未知 token 保持空值 | 治理系统也必须证明自己没有无限膨胀 |
+| **恢复与学习** | 精确 revert；L2 使用 Director Challenge、maturity report 与 improvement proposal | 高风险失败可恢复，下一次有依据地变好 |
+
+### 三种治理通道
+
+| 等级 | 何时使用 | 额外要求 | 合并后 |
+|---|---|---|---|
+| **L0** | 小、局部、可逆、无外部副作用 | 精简上下文；仍保留单写者、权限、Evidence、Verifier、Review、Merge Gate | `MERGED` |
+| **L1** | 普通产品或代码交付，需要验证真实收益 | 开工前冻结 Outcome Contract | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或外部副作用 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+
+高风险因子和外部副作用会机械强制 `L2`。优先级高不等于风险低；再紧急也不能降低治理等级。
 
 ### 一个交付怎样流动
 
@@ -84,14 +97,22 @@ stateDiagram-v2
     READY --> BUILDING: 启动 Claude Builder
     BUILDING --> VERIFYING: 候选 Commit 就绪
     VERIFYING --> READY_FOR_REVIEW: Evidence PASS
-    READY_FOR_REVIEW --> CODEX_REVIEWING: 机械校验 + Learning + 可选只读 Reviewer
+    READY_FOR_REVIEW --> CODEX_REVIEWING: 机械校验 + 可选只读 Reviewer
     CODEX_REVIEWING --> REWORK: CHANGES_REQUESTED
     REWORK --> BUILDING: Claude 在原 Worktree 返工
     CODEX_REVIEWING --> ACCEPTED: 验收通过
-    ACCEPTED --> MERGED: Merge Gate
+    ACCEPTED --> MERGED: L0 Merge Gate
+    ACCEPTED --> OUTCOME_PENDING: L1/L2 Merge Gate
+    OUTCOME_PENDING --> OUTCOME_CONFIRMED: 收益被证据确认
+    OUTCOME_PENDING --> OUTCOME_REFUTED: 收益被证据反驳
+    OUTCOME_PENDING --> OUTCOME_INCONCLUSIVE: 证据暂不充分
+    OUTCOME_INCONCLUSIVE --> OUTCOME_CONFIRMED: 补充观察
+    OUTCOME_INCONCLUSIVE --> OUTCOME_REFUTED: 补充观察
     BUILDING --> RUNTIME_FAILED: fallback 链耗尽
     RUNTIME_FAILED --> [*]: 诊断后另建受授权 Run
     MERGED --> ROLLED_BACK: 经授权精确回滚
+    OUTCOME_CONFIRMED --> ROLLED_BACK: 经授权精确回滚
+    OUTCOME_REFUTED --> ROLLED_BACK: 经授权精确回滚
     MERGED --> [*]
     ROLLED_BACK --> [*]
 ```
@@ -105,7 +126,7 @@ stateDiagram-v2
 - **模型额度或 Provider 不稳定**：可配置角色路由和有限 fallback，失败显式终止。
 - **高风险、长期演进的产品**：权限、失败位置、回滚与学习都有可审计记录。
 
-如果只是一次性的单文件低风险修改，直接使用一个 Agent 往往更轻。Agent OS 的价值出现在**任务跨轮次、跨模型、需要验收或必须恢复**的时候。
+一次性低风险修改可以走 L0；确实不需要跨 Agent、审计或恢复时，直接使用一个 Agent 仍然更轻。Agent OS 的价值出现在**任务跨轮次、跨模型、需要验收或必须恢复**的时候。
 
 ## 快速开始
 
@@ -126,6 +147,14 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 安装器会把 `agent-shift` 和 `agent-os` 链接到 `${CODEX_HOME:-$HOME/.codex}/skills/`，并在 `${BIN_DIR:-$HOME/.local/bin}` 创建 CLI 包装命令。遇到同名 Skill 或命令时会拒绝覆盖。
+
+如果旧版本是复制到 `~/.codex/skills/` 的实体目录，显式迁移一次：
+
+```bash
+./scripts/install.sh --migrate-existing
+```
+
+安装器会先把旧目录移到 `~/.codex/skills-backup/`，再建立指向当前 Git checkout 的符号链接；已有但来源不明的符号链接仍会被拒绝。以后 `git pull --ff-only` 会同步更新系统 Skill。
 
 新建一个 Codex 任务，让 Codex 重新发现 Skills，然后验证：
 
@@ -181,23 +210,43 @@ agent-os doctor . --strict
 
 ### 3. 跑一次受治理交付
 
-Codex 先创建并批准 Work Package：
+Codex 先选择治理等级，再创建 Work Package。下面是普通 `L1` 交付；小型本地修改可改为 `L0` 并省略 Outcome Contract，高风险工作必须使用 `L2`：
 
 ```bash
 agent-os package-create . \
   --id wp-001 \
   --work-unit default \
+  --governance-level L1 \
   --goal "Observable outcome" \
   --objective "Bounded implementation objective" \
   --mission-alignment "Why this advances the mission" \
   --priority P1 \
   --expected-gain "Expected user or business gain" \
+  --outcome-metric "Metric that should change" \
+  --outcome-baseline "Current observed value" \
+  --outcome-target "Target value or condition" \
+  --outcome-validation-window "When to check" \
+  --outcome-evidence-source "Where the observation will come from" \
   --selected-approach "Chosen approach" \
   --rationale "Why this approach fits" \
   --allow src tests \
   --verify "npm test" \
   --rollback-check "npm test"
+```
 
+仅 `L2` 需要在批准工作包前记录独立 Director Challenge；review 文件保留挑战依据，不得由 Codex/director 自己充当 challenger：
+
+```bash
+agent-os director-challenge . --package wp-001 \
+  --reviewer "independent-reviewer" \
+  --decision PASS \
+  --summary "Scope, assumptions, alternatives and recovery are credible" \
+  --review-file /path/to/director-challenge.md
+```
+
+批准并提交治理契约：
+
+```bash
 agent-os package-ready . --id wp-001
 git add .agent-os/work-packages/wp-001.json
 AGENT_SHIFT_ALLOW_MAIN_COMMIT=1 \
@@ -213,11 +262,16 @@ agent-os claude-start . --run run-wp-001-r1
 agent-os claude-status . --run run-wp-001-r1
 ```
 
-候选结果产生后，执行 Evidence、机械证据校验和成熟度检查：
+候选结果产生后，执行 Evidence 和机械证据校验：
 
 ```bash
 agent-os verify . --run run-wp-001-r1
 agent-os verifier . --run run-wp-001-r1
+```
+
+`L2` 还要在验收前完成学习与五问成熟度：
+
+```bash
 agent-os learn . --run run-wp-001-r1 \
   --outcome no-change \
   --observation "Observed result" \
@@ -239,6 +293,18 @@ agent-os review . --run run-wp-001-r1 \
   --decision ACCEPTED \
   --summary "Acceptance evidence"
 agent-os merge . --run run-wp-001-r1
+```
+
+`L1` / `L2` 的 merge 只证明交付完成，不宣称收益已经发生。到验证窗口后，用真实证据回访，并查看治理成本：
+
+```bash
+agent-os outcome-check . --run run-wp-001-r1 \
+  --result CONFIRMED \
+  --observed-value "Observed value after delivery" \
+  --note "Why this evidence confirms the frozen target" \
+  --evidence-file /path/to/outcome-evidence.json
+
+agent-os economics . --run run-wp-001-r1
 ```
 
 需要改进时，Codex 给出结构化 finding，Claude 在**原 Worktree** 继续返工：
@@ -289,13 +355,14 @@ sequenceDiagram
         O->>R: 只读语义审查
         R-->>C: Evidence-backed findings
     end
-    O-->>C: 精确 Commit、Diff、Checks、Learning
+    O-->>C: 精确 Commit、Diff、Checks、风险等级
     alt 需要改进
         C->>O: CHANGES_REQUESTED
         O->>B: 原 Worktree 继续返工
     else 验收通过
         C->>O: ACCEPTED
         O->>G: Merge Gate
+        O-->>C: Outcome 回访 + Run Economics
     end
 ```
 
@@ -337,9 +404,9 @@ flowchart LR
 - 未知错误不会盲目切模型。
 - Builder 连续 5 分钟、Reviewer 连续 15 分钟没有 job update 时标记 `SUSPECTED_STALL`，但不会在旧 writer 仍活跃时启动第二个 writer。
 
-## 成熟 Agent 必须回答的五个问题
+## 高风险 Agent 必须回答的五个问题
 
-每次交付都应留下足够证据回答：
+每个 `L2` 交付都必须留下足够证据回答；`L0` / `L1` 仍保留必要的交付、权限、失败和恢复证据，但不把完整五问作为验收仪式：
 
 1. **为什么这样做？** 目标、使命关联、选择理由和替代方案是什么？
 2. **使用了什么权限？** 谁能写哪些路径，谁只能读，谁拥有合并权？
@@ -347,7 +414,7 @@ flowchart LR
 4. **如何回滚？** 对应哪个精确 Commit，Git 与外部副作用分别怎样恢复？
 5. **下一次为什么会更好？** 哪条证据支持修改规则，或者为什么本轮不应修改？
 
-`agent-os maturity-report` 会检查这五类证据是否真的存在；历史记录不会为了看起来完整而伪造补齐。
+`agent-os maturity-report` 会检查 `L2` 的五类证据是否真的存在；历史记录不会为了看起来完整而伪造补齐。
 
 ## 权限、安全与停止条件
 
@@ -401,9 +468,10 @@ Agent OS 依赖 Agent Shift，因此安装器会同时安装两者。
 ```bash
 cd agent-os-skill
 git pull --ff-only
+agent-os upgrade /path/to/project
 ```
 
-安装使用符号链接，拉取后即可更新 Skill。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
+安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 项目迁移到 v0.4，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
 
 安全卸载：
 
@@ -418,16 +486,17 @@ cd agent-os-skill
 
 ```bash
 python3 skills/agent-os/scripts/test_agent_os_routing.py
+python3 skills/agent-os/scripts/test_agent_os_v04.py
 python3 skills/agent-os/scripts/test_agent_os_v03.py
 ```
 
-第二个测试会在临时目录中创建 disposable Git 仓库和 Worktree，不会对真实项目执行破坏性操作。
+测试会在临时目录中创建 disposable Git 仓库和 Worktree，不会对真实项目执行破坏性操作。
 
 ---
 
 ## English overview
 
-**Agent OS turns Codex, Claude Code, and Git into an observable, governed, and recoverable AI software team.**
+**Agent OS v0.4 turns Codex, Claude Code, and Git into an observable, proportionally governed, outcome-aware, and recoverable AI software team.**
 
 - **Codex Director** owns mission alignment, scope, acceptance criteria, findings, merge authority, and final delivery decisions.
 - **Claude Builder** owns implementation and ordinary rework inside an isolated Git worktree.

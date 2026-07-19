@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent OS"
-  short_description: "Governed multi-agent delivery with evidence and recovery"
-  default_prompt: "Use $agent-os to run a permission-bounded delivery loop with exact evidence, safe recovery, and final Codex review."
+  short_description: "Proportional multi-agent delivery with evidence, outcomes, and recovery"
+  default_prompt: "Use $agent-os to choose L0/L1/L2 governance, run a permission-bounded delivery loop with exact evidence, and verify both delivery and outcome without inventing cost data."

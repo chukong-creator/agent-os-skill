@@ -5,6 +5,17 @@ REPO_ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CODEX_HOME=${CODEX_HOME:-"$HOME/.codex"}
 BIN_DIR=${BIN_DIR:-"$HOME/.local/bin"}
 SKILLS_DIR="$CODEX_HOME/skills"
+MIGRATE_EXISTING=0
+BACKUP_STAMP=$(date '+%Y%m%dT%H%M%S')-$$
+
+case ${1:-} in
+  "") ;;
+  --migrate-existing) MIGRATE_EXISTING=1 ;;
+  *)
+    printf '%s\n' "Usage: $0 [--migrate-existing]" >&2
+    exit 2
+    ;;
+esac
 
 mkdir -p "$SKILLS_DIR" "$BIN_DIR"
 
@@ -13,6 +24,9 @@ check_skill_target() {
   source_path="$REPO_ROOT/skills/$name"
   target_path="$SKILLS_DIR/$name"
   if [ -L "$target_path" ] && [ "$(readlink "$target_path")" = "$source_path" ]; then
+    return
+  fi
+  if [ "$MIGRATE_EXISTING" -eq 1 ] && [ -d "$target_path" ] && [ ! -L "$target_path" ]; then
     return
   fi
   if [ -e "$target_path" ] || [ -L "$target_path" ]; then
@@ -50,8 +64,16 @@ install_skill() {
     exit 2
   fi
   if [ -e "$target_path" ]; then
-    printf '%s\n' "Refusing to replace existing Skill: $target_path" >&2
-    exit 2
+    if [ "$MIGRATE_EXISTING" -eq 1 ] && [ -d "$target_path" ] && [ ! -L "$target_path" ]; then
+      backup_dir="$CODEX_HOME/skills-backup"
+      backup_path="$backup_dir/$name-$BACKUP_STAMP"
+      mkdir -p "$backup_dir"
+      mv "$target_path" "$backup_path"
+      printf '%s\n' "Backed up existing Skill: $target_path -> $backup_path"
+    else
+      printf '%s\n' "Refusing to replace existing Skill: $target_path" >&2
+      exit 2
+    fi
   fi
   ln -s "$source_path" "$target_path"
   printf '%s\n' "Linked Skill: $target_path -> $source_path"
