@@ -1,0 +1,15 @@
+# Agent Shift: keep stable project configuration, ignore live handoff state.
+.agent-shift/*
+!.agent-shift/project.json
+
+# Agent OS: track governance truth, ignore runtime state and raw Run evidence.
+.agent-os/*
+!.agent-os/project.json
+!.agent-os/policy/
+!.agent-os/policy/**
+!.agent-os/work-packages/
+!.agent-os/work-packages/**
+!.agent-os/reviews/
+!.agent-os/reviews/**
+!.agent-os/improvements/
+!.agent-os/improvements/**

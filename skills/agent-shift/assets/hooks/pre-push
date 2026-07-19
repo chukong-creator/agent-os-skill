@@ -1,0 +1,5 @@
+#!/bin/sh
+if [ "${AGENT_SHIFT_ALLOW_PUSH:-0}" != "1" ]; then
+  echo "Agent Shift: push is blocked until the user explicitly authorizes a remote operation." >&2
+  exit 1
+fi

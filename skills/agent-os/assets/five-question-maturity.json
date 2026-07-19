@@ -1,0 +1,57 @@
+{
+  "agent_os_version": "0.3",
+  "policy_id": "five-question-maturity",
+  "questions": [
+    "why_this_action",
+    "permissions_used",
+    "failure_location",
+    "rollback_path",
+    "next_time_improvement"
+  ],
+  "run_start_requires": [
+    "decision_trace",
+    "permission_manifest",
+    "rollback_plan"
+  ],
+  "acceptance_requires": [
+    "evidence_manifest_pass",
+    "verifier_pass",
+    "exact_commit_match",
+    "no_unresolved_failures",
+    "learning_assessment",
+    "maturity_report_pass",
+    "merge_gate_pass",
+    "codex_review"
+  ],
+  "failure_categories": [
+    "goal_contract",
+    "context",
+    "permission",
+    "implementation",
+    "verification",
+    "dependency",
+    "runtime",
+    "merge",
+    "external_service",
+    "governance",
+    "unknown"
+  ],
+  "blocker_classes": [
+    "model-fixable",
+    "contradiction",
+    "unverifiable",
+    "new-authority-required"
+  ],
+  "rollback": {
+    "strategy": "git-revert-merge-commit",
+    "requires_explicit_execute": true,
+    "requires_reason": true,
+    "requires_clean_exact_head": true,
+    "external_side_effects_are_separate": true
+  },
+  "learning": {
+    "allowed_outcomes": ["no-change", "proposal"],
+    "proposal_initial_status": "PROPOSED",
+    "automatic_policy_adoption": false
+  }
+}

@@ -1,0 +1,35 @@
+# Return to Codex
+
+## Handoff id
+
+`UNASSIGNED`
+
+## Outcome
+
+State completed, partially completed, or blocked.
+
+## Files changed
+
+List changed files and intent.
+
+## Git result
+
+- Agent branch: `UNASSIGNED`
+- HEAD commit: `UNASSIGNED`
+- Baseline commit: `UNASSIGNED`
+
+## Verification
+
+List commands, results, render evidence, and failures.
+
+## Decisions and deviations
+
+List any deviation from the handoff and why.
+
+## Remaining risks
+
+List unresolved risks or `none`.
+
+## Recommended next state
+
+`READY_FOR_REVIEW` or `BLOCKED_DECISION`.

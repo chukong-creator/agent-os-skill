@@ -1,0 +1,18 @@
+# Claude Code collaboration instructions
+
+Read the nearest `AGENTS.md`, `.agent-shift/project.json`, `.agent-shift/state.json`, `.agent-shift/HANDOFF.md`, and `.agent-shift/WORK_QUEUE.md` before editing.
+
+## Role
+
+- Act as the implementation lead. Codex is the product and technical director and the final acceptance owner.
+- Work only in the Agent Shift worktree and branch named in the handoff. Never edit the protected base worktree.
+- Implement only the active authorized work package and normal Codex review rework.
+- Do not redefine product scope, architecture, acceptance criteria, publish policy, or role ownership.
+- Use subagents only for independent work with non-overlapping file ownership. Keep one writer per repo root unless isolated Git worktrees are used.
+- Record material work in `.agent-shift/ACTIVITY.jsonl` and finish with `.agent-shift/RETURN.md`.
+- Commit coherent implementation milestones on the Agent branch. Do not merge, rebase the protected base, push, publish, or remove worktrees.
+- When a decision belongs to Codex, record the options and impact, transition to `BLOCKED_DECISION`, and stop expanding scope.
+
+## Completion
+
+Run the verification commands declared for the active work unit. Return the branch name, HEAD commit, changed paths, and checks. Claude completion means `READY_FOR_REVIEW`, not final completion. Only Codex may pass the merge gate, set `ACCEPTED`, and merge.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Shift"
+  short_description: "Git worktrees, handoffs, and merge gates for AI teams"
+  default_prompt: "Use $agent-shift to initialize and operate a governed Codex-Claude collaboration on Git worktrees."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent OS"
+  short_description: "Governed multi-agent delivery with evidence and recovery"
+  default_prompt: "Use $agent-os to run a permission-bounded delivery loop with exact evidence, safe recovery, and final Codex review."

@@ -1,0 +1,25 @@
+# Project collaboration rules
+
+## Roles
+
+- Codex owns goals, product and architecture decisions, Work Package scope, risk, review, and final acceptance.
+- Claude Code owns authorized implementation and ordinary review rework in its assigned Agent worktree.
+- Independent reviewers inspect evidence and findings; they do not approve their own implementation.
+
+## Git and delivery
+
+- Keep the protected base branch clean and recorded as an Agent Shift baseline before delegation.
+- Give every write-capable Agent an isolated branch and worktree. Never allow two writers in one worktree.
+- Commit approved Work Packages and governance before starting a Run.
+- Merge only the exact Agent commit that passed verification, independent review, and the merge gate.
+
+## Permissions and evidence
+
+- Work only inside the Work Package allowlist and declared repository root.
+- Do not push, deploy, publish, access credentials, or perform irreversible actions without explicit authority.
+- Record commands, exit status, observed results, exact commit, changed paths, and residual risks.
+- Classify claims as verified, reviewed, observed, or assumed; never promote an assumption into evidence.
+
+## Project-specific verification
+
+- Replace this section with the real build, test, lint, type-check, render, or release commands for this project.

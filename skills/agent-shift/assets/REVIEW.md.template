@@ -1,0 +1,13 @@
+# Codex review
+
+## Review id
+
+`R-UNASSIGNED`
+
+## Verdict
+
+`CHANGES_REQUESTED` or `ACCEPTED`.
+
+## Findings
+
+For each finding include id, severity, evidence, expected behavior, work unit, allowed files, verification command, and pass condition.

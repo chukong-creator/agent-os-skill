@@ -1,0 +1,42 @@
+# Handoff
+
+## Handoff id
+
+`UNASSIGNED`
+
+## Goal
+
+Describe the observable outcome.
+
+## Active work unit
+
+Name the `project.json` work-unit id and repo root.
+
+## Git execution context
+
+- Baseline commit: `UNASSIGNED`
+- Agent branch: `UNASSIGNED`
+- Worktree path: `UNASSIGNED`
+- Protected base branch: `main`
+
+## Context and decisions
+
+List product truth, architecture decisions, and files to read first.
+
+## Allowed actions and files
+
+List the exact implementation boundary.
+
+## Forbidden actions
+
+List product, architecture, credential, deployment, destructive, or out-of-scope actions.
+
+## Acceptance criteria
+
+List testable completion conditions and verification commands.
+
+The merge gate must also pass the changed-path allowlist, clean worktree, conflict, and exact-commit checks.
+
+## Stop and escalate when
+
+List decisions or failures that require Codex.

@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "cc_switch_database": "~/.cc-switch/cc-switch.db",
+  "default_profile": "builder",
+  "profiles": {
+    "builder": {
+      "mode": "builder",
+      "provider": "Primary Builder Provider",
+      "model": "builder-model",
+      "effort": "medium"
+    },
+    "builder-fallback": {
+      "mode": "builder",
+      "provider": "Fallback Builder Provider",
+      "model": "fallback-model"
+    },
+    "reviewer": {
+      "mode": "reviewer",
+      "provider": "Reviewer Provider",
+      "model": "reviewer-model",
+      "effort": "high"
+    }
+  },
+  "fallback_chains": {
+    "builder": [
+      "builder",
+      "builder-fallback"
+    ],
+    "reviewer": [
+      "reviewer"
+    ]
+  },
+  "supervision": {
+    "poll_seconds": 10,
+    "discovery_timeout_seconds": 90,
+    "builder_suspected_stall_seconds": 300,
+    "reviewer_suspected_stall_seconds": 900
+  }
+}
