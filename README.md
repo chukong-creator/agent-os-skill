@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
-</p>
-
-# Agent OS
+<h1 align="center">Agent OS</h1>
 
 <p align="center">
   <strong>把 Codex、Claude Code 与 Git 组织成一支可观察、可验收、可恢复、会进化的 AI 软件团队。</strong>
@@ -10,6 +6,10 @@
 
 <p align="center">
   <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.3 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
+</p>
+
+<p align="center">
+  <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
 </p>
 
 Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Review Gate 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。
