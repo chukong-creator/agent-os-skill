@@ -272,12 +272,15 @@ def runtime_recovery_decision(
     state: str | None, detail: str | None, chain: list[str], current_profile: str,
     attempted_profiles: list[str] | None = None, failure_category: str | None = None,
 ) -> dict[str, Any]:
-    normalized_state = (state or "unknown").lower()
-    if normalized_state in {"running", "active", "starting", "unknown"}:
+    normalized_state = (state or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized_state in {
+        "running", "active", "starting", "unknown", "working", "busy", "idle",
+        "queued", "pending", "waiting", "needs_input", "awaiting_input",
+    }:
         return {"action": "wait", "state": normalized_state}
-    if normalized_state == "done":
+    if normalized_state in {"done", "completed", "succeeded"}:
         return {"action": "complete", "state": normalized_state}
-    if normalized_state == "stopped":
+    if normalized_state in {"stopped", "cancelled", "canceled", "interrupted"}:
         return {"action": "stop", "state": normalized_state, "category": "operator_or_runtime_stop"}
     category = failure_category or classify_runtime_failure(detail)
     if category != "provider_or_quota":
@@ -318,7 +321,8 @@ def validate_routing_launch_authorization(
         if not authorized:
             raise ValueError("internal fallback launch requires Supervisor authorization in routing state")
         return
-    if state and state.get("mode") == mode and state.get("status") != "REWORK_READY":
+    restart_states = {"REWORK_READY", "RUNTIME_RECOVERY_READY"}
+    if state and state.get("mode") == mode and state.get("status") not in restart_states:
         raise ValueError("a routing cycle already exists for this role; only its Supervisor may advance profiles")
 
 
@@ -406,17 +410,39 @@ def safe_agent_status(agent: dict[str, Any]) -> tuple[str, datetime | None]:
     return detail, activity_at
 
 
+def runtime_failure_fields(category: str) -> tuple[str, str, str]:
+    if category == "runtime_unknown":
+        return (
+            "unverifiable",
+            "Claude execution entered an unsupported or terminal runtime state.",
+            "The Supervisor could not determine the root cause; diagnosis is pending.",
+        )
+    if category.startswith("routing_"):
+        return (
+            "contradiction",
+            f"Claude routing state became inconsistent: {category}",
+            "The recorded routing cycle could not authorize a safe next profile.",
+        )
+    if category.startswith("provider_or_quota"):
+        return (
+            "new-authority-required",
+            f"Claude execution exhausted the authorized provider route: {category}",
+            "The finite authorized provider chain could not continue.",
+        )
+    return (
+        "new-authority-required",
+        f"Claude execution could not continue: {category}",
+        "The local execution environment prevented continuation.",
+    )
+
+
 def mark_runtime_failed(root: Path, run_id: str, category: str) -> None:
     with db_connect(root) as db:
         row = active_run(db, run_id)
         db.execute("UPDATE runs SET status='RUNTIME_FAILED', ended_at=? WHERE id=?", (now_iso(), run_id))
         db.execute("UPDATE work_packages SET status='RUNTIME_FAILED', updated_at=? WHERE id=?", (now_iso(), row["package_id"]))
-    record_failure(
-        root, run_id, "BUILDING", "runtime", "new-authority-required",
-        f"Claude execution could not continue after finite provider fallback: {category}",
-        "The authorized fallback chain is exhausted or the local execution environment is unavailable.",
-        [str(routing_state_path(root, run_id))],
-    )
+    blocker_class, symptom, root_cause = runtime_failure_fields(category)
+    record_failure(root, run_id, "BUILDING", "runtime", blocker_class, symptom, root_cause, [str(routing_state_path(root, run_id))])
     update_routing_state(root, run_id, status="RUNTIME_FAILED", terminal_category=category, ended_at=now_iso())
     append_event(root, run_id, "system", "routing_failed", "Finite model fallback could not continue", category=category)
 
@@ -2338,6 +2364,49 @@ def cmd_lock_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_runtime_recover(args: argparse.Namespace) -> int:
+    """Restore the same Run and worktree after a runtime or lock failure."""
+    root = root_path(args.project)
+    project = read_json(os_dir(root) / "project.json")
+    with db_connect(root) as db:
+        row = active_run(db, args.run)
+        if row["status"] not in {"RUNTIME_FAILED", "LOCK_EXPIRED"}:
+            raise ValueError("runtime-recover requires RUNTIME_FAILED or LOCK_EXPIRED Run")
+        if db.execute("SELECT 1 FROM locks WHERE work_unit=(SELECT work_unit FROM work_packages WHERE id=?)", (row["package_id"],)).fetchone():
+            raise ValueError("runtime-recover requires the work unit to have no active lock")
+        package = db.execute("SELECT * FROM work_packages WHERE id=?", (row["package_id"],)).fetchone()
+        if not package or package["current_run"] != args.run:
+            raise ValueError("runtime-recover requires the Package to still reference this Run")
+        worktree = Path(str(row["worktree"]))
+        if not worktree.is_dir():
+            raise ValueError(f"runtime-recover worktree is missing: {worktree}")
+        if git(worktree, "branch", "--show-current") != row["branch"]:
+            raise ValueError("runtime-recover worktree branch differs from the recorded Run branch")
+        contract = load_package(root, str(row["package_id"]))
+        unit_id = str(contract["work_unit"])
+        timestamp = now_iso()
+        ttl = int(project.get("lock_ttl_seconds", DEFAULT_LOCK_SECONDS))
+        expires = (now() + timedelta(seconds=ttl)).isoformat(timespec="seconds")
+        db.execute("INSERT INTO locks VALUES(?,?,?,?,?,?,?)", (unit_id, args.run, row["owner"], str(worktree), timestamp, timestamp, expires))
+        db.execute("UPDATE runs SET status='BUILDING', heartbeat_at=?, ended_at=NULL WHERE id=?", (timestamp, args.run))
+        db.execute("UPDATE work_packages SET status='BUILDING', updated_at=? WHERE id=?", (timestamp, row["package_id"]))
+    previous_routing = read_json(routing_state_path(root, args.run)) if routing_state_path(root, args.run).is_file() else {}
+    update_routing_state(
+        root, args.run, status="RUNTIME_RECOVERY_READY", mode=previous_routing.get("mode", "builder"),
+        active_profile=None, next_profile=None, attempts=[], recovered_at=timestamp,
+        recovery_reason=args.reason, previous_terminal_status=row["status"],
+        previous_attempts=previous_routing.get("attempts", []),
+    )
+    dirty = bool(git(worktree, "status", "--porcelain"))
+    append_event(root, args.run, "codex", "runtime_recovered", args.reason, previous_status=row["status"], dirty=dirty)
+    print(json.dumps({
+        "run": args.run, "package": row["package_id"], "status": "BUILDING",
+        "worktree": str(worktree), "branch": row["branch"], "dirty": dirty,
+        "lock_expires_at": expires,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_recover(args: argparse.Namespace) -> int:
     root = root_path(args.project)
     findings: list[dict[str, Any]] = []
@@ -2444,6 +2513,15 @@ def extract_tool_path(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def command_references_governance(command: str, worktree: Path) -> bool:
+    normalized = command.strip().lower()
+    worktree_variants = {str(worktree).lower(), str(worktree.resolve()).lower()}
+    for worktree_text in sorted(worktree_variants, key=len, reverse=True):
+        normalized = normalized.replace(shlex.quote(worktree_text), "<worktree>").replace(worktree_text, "<worktree>")
+    governance = (".agent-os", ".agent-shift", ".githooks", "agents.md", "claude.md", ".claude/settings")
+    return any(fragment in normalized for fragment in governance)
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
     payload = json.load(sys.stdin)
     cwd = Path(str(payload.get("cwd") or os.getcwd())).resolve()
@@ -2493,9 +2571,8 @@ def cmd_hook(args: argparse.Namespace) -> int:
                 if any(fragment in command for fragment in HIGH_RISK_FRAGMENTS):
                     print("Agent OS blocked: high-risk command requires Codex/user decision", file=sys.stderr)
                     return 2
-                governance = (".agent-os", ".agent-shift", ".githooks", "agents.md", "claude.md", ".claude/settings")
                 safe_control = command.strip().startswith(("agent-os verify", "agent-os heartbeat", "agent-os status", "agent-os claude-status", "agent-shift log"))
-                if any(fragment in command for fragment in governance) and not safe_control:
+                if command_references_governance(command, Path(str(lock["worktree"]))) and not safe_control:
                     print("Agent OS blocked: governance mutation is director-owned", file=sys.stderr)
                     return 2
         run_id = str(lock["run_id"]) if lock else None
@@ -2535,6 +2612,7 @@ def parser() -> argparse.ArgumentParser:
     economics = sub.add_parser("economics"); economics.add_argument("project"); economics.add_argument("--run", required=True); economics.set_defaults(func=cmd_economics)
     rollback = sub.add_parser("rollback"); rollback.add_argument("project"); rollback.add_argument("--run", required=True); rollback.add_argument("--reason", required=True); rollback.add_argument("--execute", action="store_true"); rollback.add_argument("--ack-external", action="store_true"); rollback.set_defaults(func=cmd_rollback)
     release = sub.add_parser("lock-release"); release.add_argument("project"); release.add_argument("--work-unit", required=True); release.add_argument("--reason", required=True); release.set_defaults(func=cmd_lock_release)
+    runtime_recover = sub.add_parser("runtime-recover"); runtime_recover.add_argument("project"); runtime_recover.add_argument("--run", required=True); runtime_recover.add_argument("--reason", required=True); runtime_recover.set_defaults(func=cmd_runtime_recover)
     recover = sub.add_parser("recover"); recover.add_argument("project"); recover.set_defaults(func=cmd_recover)
     status = sub.add_parser("status"); status.add_argument("project"); status.set_defaults(func=cmd_status)
     doctor = sub.add_parser("doctor"); doctor.add_argument("project"); doctor.add_argument("--strict", action="store_true"); doctor.add_argument("--verbose", action="store_true"); doctor.set_defaults(func=cmd_doctor)

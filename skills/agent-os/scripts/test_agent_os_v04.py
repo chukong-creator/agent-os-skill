@@ -251,6 +251,44 @@ def test_migration_refuses_active_lock(parent: Path) -> None:
     assert not list((root / ".agent-os").glob("state.db.v0.3.*.bak"))
 
 
+def test_runtime_recover_reuses_same_run(parent: Path) -> None:
+    root = parent / "runtime-recover"
+    initialize(root, "runtime-recover")
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-recover", "--work-unit", "default",
+        "--governance-level", "L0", "--goal", "Resume interrupted implementation",
+        "--expected-gain", "The same Run and worktree continue without duplicated context",
+        "--allow", "app.txt", "--verify", "grep -q success app.txt",
+    ], root)
+    call([AGENT_OS, "package-ready", str(root), "--id", "wp-recover"], root)
+    commit(root, "plan: approve runtime recovery fixture")
+    started = json.loads(call([
+        AGENT_OS, "run-start", str(root), "--package", "wp-recover",
+        "--run", "run-recover", "--agent", "claude",
+    ], root))
+    worktree = Path(started["worktree"])
+    write(worktree / "app.txt", "partial work\n")
+    call([
+        AGENT_OS, "lock-release", str(root), "--work-unit", "default",
+        "--reason", "simulate runtime interruption",
+    ], root)
+    recovered = json.loads(call([
+        AGENT_OS, "runtime-recover", str(root), "--run", "run-recover",
+        "--reason", "resume after supervisor repair",
+    ], root))
+    assert recovered["run"] == "run-recover"
+    assert recovered["package"] == "wp-recover"
+    assert recovered["worktree"] == str(worktree)
+    assert recovered["branch"] == started["branch"]
+    assert recovered["dirty"] is True
+    with sqlite3.connect(root / ".agent-os/state.db") as db:
+        assert db.execute("SELECT status FROM runs WHERE id='run-recover'").fetchone()[0] == "BUILDING"
+        assert db.execute("SELECT status FROM work_packages WHERE id='wp-recover'").fetchone()[0] == "BUILDING"
+        assert db.execute("SELECT run_id FROM locks WHERE work_unit='default'").fetchone()[0] == "run-recover"
+    routing = json.loads((root / ".agent-os/runs/run-recover/routing-state.json").read_text(encoding="utf-8"))
+    assert routing["status"] == "RUNTIME_RECOVERY_READY"
+
+
 def main() -> int:
     parent = Path(tempfile.mkdtemp(prefix="agent-os-v04-", dir="/tmp"))
     try:
@@ -260,6 +298,7 @@ def main() -> int:
         test_l2_challenge_and_maturity(parent)
         test_v03_explicit_migration(parent)
         test_migration_refuses_active_lock(parent)
+        test_runtime_recover_reuses_same_run(parent)
         print(json.dumps({
             "result": "PASS", "workspace": str(parent),
             "scenarios": [
@@ -267,6 +306,7 @@ def main() -> int:
                 "outcome-inconclusive", "outcome-confirmed", "outcome-refuted",
                 "outcome-safe-rollback", "L2-director-challenge", "L2-maturity",
                 "governance-economics", "v03-explicit-migration", "migration-active-lock-refusal",
+                "same-run-runtime-recovery",
             ],
         }, indent=2))
         return 0

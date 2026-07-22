@@ -177,6 +177,26 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(decision["action"], "fail")
         self.assertEqual(decision["category"], "runtime_unknown")
 
+    def test_real_claude_nonterminal_states_keep_supervisor_waiting(self) -> None:
+        for state in (
+            "working", "busy", "idle", "queued", "pending", "waiting",
+            "needs input", "awaiting-input",
+        ):
+            with self.subTest(state=state):
+                decision = AGENT_OS.runtime_recovery_decision(
+                    state, None, ["builder", "fallback"], "builder",
+                )
+                self.assertEqual(decision["action"], "wait")
+
+    def test_runtime_failure_record_is_honest_when_cause_is_unknown(self) -> None:
+        blocker, symptom, root_cause = AGENT_OS.runtime_failure_fields("runtime_unknown")
+        self.assertEqual(blocker, "unverifiable")
+        self.assertIn("unsupported", symptom)
+        self.assertIn("diagnosis is pending", root_cause)
+        blocker, _, root_cause = AGENT_OS.runtime_failure_fields("provider_or_quota_chain_exhausted")
+        self.assertEqual(blocker, "new-authority-required")
+        self.assertIn("provider chain", root_cause)
+
     def test_duplicate_or_repeated_profiles_cannot_loop(self) -> None:
         value = json.loads(self.config.read_text(encoding="utf-8"))
         value["fallback_chains"]["builder"] = ["builder", "fallback", "builder"]
@@ -270,6 +290,16 @@ class RoutingTests(unittest.TestCase):
         AGENT_OS.validate_routing_launch_authorization(
             {"status": "REWORK_READY", "mode": "builder"}, "builder", "builder", False,
         )
+        AGENT_OS.validate_routing_launch_authorization(
+            {"status": "RUNTIME_RECOVERY_READY", "mode": "builder"}, "builder", "builder", False,
+        )
+
+    def test_worktree_path_does_not_look_like_governance_mutation(self) -> None:
+        worktree = self.root / ".agent-shift" / "worktrees" / "run-1"
+        command = f'cd "{worktree}" && git status --short'
+        self.assertFalse(AGENT_OS.command_references_governance(command, worktree))
+        self.assertTrue(AGENT_OS.command_references_governance("cat .agent-os/state.db", worktree))
+        self.assertTrue(AGENT_OS.command_references_governance("git add CLAUDE.md", worktree))
 
 
 if __name__ == "__main__":

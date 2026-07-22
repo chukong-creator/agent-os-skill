@@ -78,6 +78,7 @@ If any commit changes after verification, rerun evidence collection, Verifier, a
 - A lock contains owner, Run, worktree, heartbeat, and expiry.
 - Hooks reject writes without a matching non-expired lock.
 - `recover` reports expired locks, missing worktrees, dirty worktrees, branch drift, and incomplete evidence without mutating them.
+- `runtime-recover` may restore only a `RUNTIME_FAILED` or `LOCK_EXPIRED` Run whose Package still points to it and whose recorded worktree and branch still exist. It preserves partial work and reuses the same Run.
 - Forced release requires a reason and an activity record. Never auto-remove dirty worktrees.
 
 ## Evidence and economics

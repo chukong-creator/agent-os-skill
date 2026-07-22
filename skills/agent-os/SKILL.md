@@ -166,9 +166,12 @@ Use `learn --outcome proposal` only for a repeatable process improvement with hy
 agent-os rollback <project-root> --run <run-id> --reason "Why rollback is needed"
 agent-os rollback <project-root> --run <run-id> --reason "..." --execute
 agent-os recover <project-root>
+agent-os runtime-recover <project-root> --run <run-id> --reason "Why the same Run is safe to resume"
 ```
 
 Automatic rollback remains narrow: latest recorded no-ff merge, clean protected branch, exact HEAD, matching accepted commit and Evidence, explicit execute and reason. Outcome metadata does not add a Git commit above the merge. External effects require `--ack-external` and remain `CODE_REVERTED_EXTERNAL_PENDING` until separately verified.
+
+`recover` is read-only. `runtime-recover` is the explicit, minimal mutation for a `RUNTIME_FAILED` or `LOCK_EXPIRED` Run: it restores that Run's lock and reuses its Package, branch, worktree, and partial edits instead of creating duplicate work or context.
 
 ## Evidence discipline
 

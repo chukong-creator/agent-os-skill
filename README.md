@@ -444,6 +444,12 @@ agent-os rollback . --run run-wp-001-r1 --reason "..." --execute
 agent-os recover .
 ```
 
+如果 Run 因运行时误判或锁释放而中断，确认原因后原地恢复，不复制 Work Package 或上下文：
+
+```bash
+agent-os runtime-recover . --run run-wp-001-r1 --reason "已确认可安全继续同一工作树"
+```
+
 ## 仓库结构
 
 ```text

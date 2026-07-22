@@ -34,12 +34,15 @@ An API key or auth token must never appear in the routing file, command line, te
 
 The detached Run supervisor observes the exact Claude background session it launched.
 
+- `working`, `busy`, `queued`, `pending`, or an input-waiting state: keep waiting; these are non-terminal states.
 - `done`: close the supervisor successfully.
 - `stopped`: respect the stop and do not restart.
 - `failed` with an explicit quota, rate-limit, insufficient-balance, provider-authentication, overload, HTTP 5xx, or provider-gateway error: start the next profile once.
 - `failed` because the worktree is missing, permissions are invalid, or routing configuration is broken: do not burn another provider's quota.
 - an unknown failure: stop as `RUNTIME_FAILED`; never guess that changing models will fix it.
 - no remaining profile: record a runtime failure and transition the Run to `RUNTIME_FAILED`.
+
+After the cause is understood, Codex may run `agent-os runtime-recover <project-root> --run <run-id> --reason "..."`. Recovery reuses the same Run and worktree, restores the single-writer lock, and starts a fresh finite routing cycle. It does not duplicate the Work Package or erase failure evidence.
 
 Fallback chains must contain unique profiles. A routing cycle records every attempted profile before launch and refuses to exceed the chain length, so a bad configuration cannot create an infinite provider loop. Startup status checks fail closed, and a per-worktree launch mutex makes the status-check plus launch operation single-writer. Once a role cycle exists, only its Supervisor may advance to the exact `next_profile` recorded in `FALLBACK_STARTING`; an external `claude-start --profile fallback` cannot bypass discovery latency.
 
