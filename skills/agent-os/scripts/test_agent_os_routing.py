@@ -180,13 +180,26 @@ class RoutingTests(unittest.TestCase):
     def test_real_claude_nonterminal_states_keep_supervisor_waiting(self) -> None:
         for state in (
             "working", "busy", "idle", "queued", "pending", "waiting",
-            "needs input", "awaiting-input",
+            "blocked", "needs input", "awaiting-input",
         ):
             with self.subTest(state=state):
                 decision = AGENT_OS.runtime_recovery_decision(
                     state, None, ["builder", "fallback"], "builder",
                 )
                 self.assertEqual(decision["action"], "wait")
+
+    def test_permission_prompt_blocked_state_keeps_the_same_writer(self) -> None:
+        agent = {
+            "id": "permission-wait-session-id",
+            "state": "blocked",
+            "waitingFor": "permission prompt",
+        }
+        detail, _ = AGENT_OS.safe_agent_status(agent)
+        self.assertEqual(detail, "permission prompt")
+        decision = AGENT_OS.runtime_recovery_decision(
+            agent["state"], detail, ["builder", "fallback"], "builder",
+        )
+        self.assertEqual(decision, {"action": "wait", "state": "blocked"})
 
     def test_runtime_failure_record_is_honest_when_cause_is_unknown(self) -> None:
         blocker, symptom, root_cause = AGENT_OS.runtime_failure_fields("runtime_unknown")

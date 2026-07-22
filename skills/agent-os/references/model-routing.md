@@ -34,7 +34,7 @@ An API key or auth token must never appear in the routing file, command line, te
 
 The detached Run supervisor observes the exact Claude background session it launched.
 
-- `working`, `busy`, `queued`, `pending`, or an input-waiting state: keep waiting; these are non-terminal states.
+- `working`, `busy`, `queued`, `pending`, `blocked`, or an input-waiting state: keep waiting; these are non-terminal states. Claude reports ordinary permission prompts as `blocked`, so the Supervisor must preserve the same writer and surface `waitingFor` instead of recording a failure or launching fallback.
 - `done`: close the supervisor successfully.
 - `stopped`: respect the stop and do not restart.
 - `failed` with an explicit quota, rate-limit, insufficient-balance, provider-authentication, overload, HTTP 5xx, or provider-gateway error: start the next profile once.

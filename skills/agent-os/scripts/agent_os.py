@@ -275,7 +275,7 @@ def runtime_recovery_decision(
     normalized_state = (state or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
     if normalized_state in {
         "running", "active", "starting", "unknown", "working", "busy", "idle",
-        "queued", "pending", "waiting", "needs_input", "awaiting_input",
+        "queued", "pending", "waiting", "blocked", "needs_input", "awaiting_input",
     }:
         return {"action": "wait", "state": normalized_state}
     if normalized_state in {"done", "completed", "succeeded"}:
@@ -395,7 +395,7 @@ def parse_agent_activity(value: Any) -> datetime | None:
 
 
 def safe_agent_status(agent: dict[str, Any]) -> tuple[str, datetime | None]:
-    detail = str(agent.get("detail") or "")
+    detail = str(agent.get("detail") or agent.get("waitingFor") or "")
     activity_at = parse_agent_activity(agent.get("updatedAt") or agent.get("startedAt"))
     identifier = str(agent.get("id") or "")
     if identifier and len(identifier) <= 16:
