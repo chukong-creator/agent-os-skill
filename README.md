@@ -85,10 +85,12 @@ flowchart TD
 | 等级 | 何时使用 | 额外要求 | 合并后 |
 |---|---|---|---|
 | **L0** | 小、局部、可逆、无外部副作用 | 精简上下文；仍保留单写者、权限、Evidence、Verifier、Review、Merge Gate | `MERGED` |
-| **L1** | 普通产品或代码交付；可逆且经用户授权的发布 | 开工前冻结 Outcome Contract；发布还要绑定最终制品哈希、真实端点检查与回滚验证 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L1** | 普通产品或代码交付；可逆且经用户授权的发布 | 开工前冻结 Outcome Contract；交付还要绑定最终制品哈希、声明与验收命令，线上发布另需真实端点与回滚验证 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
 | **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或其他重大外部影响 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
 
-生产、隐私、凭据、迁移、删除、付款和不可逆风险会机械强制 `L2`。可逆发布可使用 `L1`，但缺少最终制品哈希或真实端点检查时不能 `ACCEPTED`。优先级高不等于风险低；再紧急也不能降低治理等级。
+生产、隐私、凭据、迁移、删除、付款和不可逆风险会机械强制 `L2`。可逆发布可使用 `L1`，但缺少最终制品哈希或最终形态验收时不能 `ACCEPTED`。优先级高不等于风险低；再紧急也不能降低治理等级。
+
+交付形态不是只有网页发布：`repo` 表示源码提交，`artifact` 表示文档/媒体/归档等导出物，`installable` 表示 iOS、macOS、桌面或移动安装包，`live` 表示托管网页或服务。后三类必须用 `--acceptance-check "声明::命令"` 直接检查用户收到的最终形态。构建通过不能代替安装启动，HTTP 200 不能代替页面交互。
 
 ### 一个交付怎样流动
 
@@ -337,6 +339,8 @@ tail -f .agent-os/runs/run-wp-001-r1/events.jsonl
 # 查看当前模型、fallback 次数与错误分类
 cat .agent-os/runs/run-wp-001-r1/routing-state.json
 ```
+
+权限或登录确认会显示为 `WAITING_FOR_PERMISSION`，保留同一个 Writer，也不会触发模型切换。`agent-os economics` 会按实际启动事件列出可观察到的 profile/provider/model；运行时没有可信 token 数据时仍明确保持 `null`，不会伪造估算。
 
 ```mermaid
 sequenceDiagram

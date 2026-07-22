@@ -83,7 +83,7 @@ def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> Non
         "--selected-approach", "Exercise release validation", "--rationale", "A build command is not a release rollback",
         *l1_outcome_args(), "--allow", "app.txt", "--verify", "grep -q success app.txt",
         "--delivery-target", "live", "--artifact-path", "app.txt", "--live-endpoint", endpoint,
-        "--live-check", f"endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\"",
+        "--acceptance-check", f"The final endpoint serves the expected artifact::endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\" && grep -q success app.txt",
         "--external-side-effect", "reversible static demo release",
     ], root)
     call([AGENT_OS, "package-ready", str(root), "--id", "wp-live-no-rollback"], root, expected=2)
@@ -98,7 +98,7 @@ def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> Non
         *l1_outcome_args(), "--allow", "app.txt", "--verify", "grep -q success app.txt",
         "--delivery-target", "live", "--artifact-path", "app.txt",
         "--live-endpoint", endpoint,
-        "--live-check", f"endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\" && grep -q success app.txt",
+        "--acceptance-check", f"The final endpoint serves the expected artifact::endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\" && grep -q success app.txt",
         "--external-side-effect", "reversible static demo release",
         "--rollback-check", "grep -q base app.txt",
     ], root)
@@ -108,6 +108,7 @@ def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> Non
     assert manifest["delivery"]["target"] == "live"
     assert manifest["delivery"]["live_endpoints"] == [endpoint]
     assert manifest["delivery"]["artifact_evidence"][0]["sha256"]
+    assert manifest["delivery"]["acceptance_evidence"][0]["claim"] == "The final endpoint serves the expected artifact"
     write(worktree / "app.txt", "changed after verification\n")
     call([
         AGENT_OS, "review", str(root), "--run", "run-live", "--decision", "ACCEPTED",
@@ -117,6 +118,36 @@ def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> Non
     call([
         AGENT_OS, "review", str(root), "--run", "run-live", "--decision", "ACCEPTED",
         "--summary", "The final artifact and live endpoint are rechecked at acceptance",
+    ], root)
+
+
+def test_installable_delivery_requires_real_package_acceptance(parent: Path) -> None:
+    root = parent / "installable"
+    initialize(root, "installable")
+    common = [
+        AGENT_OS, "package-create", str(root), "--work-unit", "default",
+        "--governance-level", "L1", "--goal", "Deliver an installable application",
+        "--objective", "Accept the packaged runtime instead of source files",
+        "--mission-alignment", "Keep packaged application delivery trustworthy",
+        "--priority", "P1", "--expected-gain", "The final package installs and launches in its declared test runtime",
+        "--selected-approach", "Hash and exercise the final installable artifact",
+        "--rationale", "A successful source build does not prove the package can install or launch",
+        *l1_outcome_args(), "--allow", "app.txt", "--verify", "grep -q success app.txt",
+        "--delivery-target", "installable", "--artifact-path", "app.txt",
+    ]
+    call([*common, "--id", "wp-installable-missing-check"], root)
+    call([AGENT_OS, "package-ready", str(root), "--id", "wp-installable-missing-check"], root, expected=2)
+    call([
+        *common, "--id", "wp-installable",
+        "--acceptance-check", "The packaged app installs and launches in the simulator::grep -q success app.txt",
+    ], root)
+    deliver_candidate(root, "wp-installable", "run-installable")
+    manifest = json.loads((root / ".agent-os/runs/run-installable/evidence/manifest.json").read_text(encoding="utf-8"))
+    assert manifest["delivery"]["target"] == "installable"
+    assert manifest["delivery"]["acceptance_evidence"][0]["result"] == "pass"
+    call([
+        AGENT_OS, "review", str(root), "--run", "run-installable", "--decision", "ACCEPTED",
+        "--summary", "The exact installable artifact passed its declared install and launch check",
     ], root)
 
 
@@ -180,6 +211,27 @@ def test_l1_outcome_and_rollback(parent: Path) -> None:
         "--reason", "Prove outcome metadata does not weaken exact-head rollback", "--execute",
     ], root))
     assert receipt["result"] == "PASS"
+
+
+def test_intermediate_review_stays_run_local(parent: Path) -> None:
+    root = parent / "run-local-review"
+    initialize(root, "run-local-review")
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-review", "--work-unit", "default",
+        "--goal", "Keep unaccepted review churn out of main",
+        "--expected-gain", "Only accepted product truth is committed",
+        "--allow", "app.txt", "--verify", "grep -q success app.txt",
+    ], root)
+    deliver_candidate(root, "wp-review", "run-review")
+    before = call(["git", "rev-parse", "HEAD"], root)
+    call([
+        AGENT_OS, "review", str(root), "--run", "run-review", "--decision", "CHANGES_REQUESTED",
+        "--summary", "The candidate needs one bounded correction",
+        "--required-change", "F-001: correct the candidate and rerun its check",
+    ], root)
+    assert call(["git", "rev-parse", "HEAD"], root) == before
+    assert not list((root / ".agent-os/reviews").glob("run-review-r1.*"))
+    assert (root / ".agent-os/runs/run-review/reviews/run-review-r1.json").is_file()
 
 
 def test_l1_refuted_outcome(parent: Path) -> None:
@@ -268,7 +320,7 @@ def test_v03_explicit_migration(parent: Path) -> None:
     output = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
     assert output["from"] == "0.3" and output["to"] == "0.4" and output["database_backup"]
     with sqlite3.connect(root / ".agent-os/state.db") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         assert "outcomes" in {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     again = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
     assert again["idempotent"] is True and again["database_backup"] is None
@@ -343,7 +395,9 @@ def main() -> int:
     try:
         test_l0_lightweight(parent)
         test_l1_live_delivery_binds_final_artifact_and_endpoint(parent)
+        test_installable_delivery_requires_real_package_acceptance(parent)
         test_l1_outcome_and_rollback(parent)
+        test_intermediate_review_stays_run_local(parent)
         test_l1_refuted_outcome(parent)
         test_l2_challenge_and_maturity(parent)
         test_v03_explicit_migration(parent)
@@ -352,7 +406,8 @@ def main() -> int:
         print(json.dumps({
             "result": "PASS", "workspace": str(parent),
             "scenarios": [
-                "L0-default-lightweight", "L1-live-artifact-endpoint-gate", "L1-risk-forces-L2", "L1-outcome-contract",
+                "L0-default-lightweight", "L1-live-artifact-endpoint-gate", "L1-installable-package-acceptance", "L1-risk-forces-L2", "L1-outcome-contract",
+                "run-local-intermediate-review",
                 "outcome-inconclusive", "outcome-confirmed", "outcome-refuted",
                 "outcome-safe-rollback", "L2-director-challenge", "L2-maturity",
                 "governance-economics", "v03-explicit-migration", "migration-active-lock-refusal",

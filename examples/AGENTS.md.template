@@ -22,7 +22,8 @@
 - Work only inside the Work Package allowlist and declared repository root.
 - Do not push, deploy, publish, access credentials, or perform irreversible actions without explicit authority.
 - Record commands, exit status, observed results, exact commit, changed paths, and residual risks.
-- For a live release, hash the final publishable artifact and pass real checks against the exact endpoint. Any repackaging invalidates earlier evidence.
+- Classify delivery as `repo`, `artifact`, `installable`, or `live`. For every non-repo delivery, hash the final artifact and bind each acceptance claim to a check against the form the user receives. A build does not prove install/launch; an HTTP response does not prove interaction.
+- Any rebuild, repackaging, signing, notarization, upload, store processing, or artifact hash change invalidates earlier delivery evidence.
 - Classify claims as verified, reviewed, observed, or assumed; never promote an assumption into evidence.
 - Record governance economics honestly. Leave token usage unknown when the runtime does not expose trusted usage.
 

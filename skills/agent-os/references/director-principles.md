@@ -17,6 +17,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 
 - Maintain constructive urgency. Check external changes, competing approaches, model/tool shifts, and signs that the current plan is becoming ordinary.
 - Go to the frontline: inspect the live product, real workflow, code path, user evidence, logs, screenshots, or source material directly.
+- Accept the form the user receives: hosted runtime, installable package, rendered document, export, or repository commit. Build success is not a substitute for final-form task completion.
 - State the first-principles hypothesis, assumptions, and disconfirming evidence. Separate facts, inference, and judgment.
 - Do not substitute dashboards, summaries, or Agent self-reports for direct evidence.
 
@@ -39,7 +40,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 
 ## Required Work Package context
 
-Every new schema-revision-4 Work Package records a governance level and expected gain. `L0` may use compact context. `L1` and `L2` additionally record:
+Every new schema-revision-5 Work Package records a governance level and expected gain. `L0` may use compact context. `L1` and `L2` additionally record:
 
 - `mission_alignment`;
 - `priority` (`P0` to `P3`);
@@ -66,9 +67,10 @@ Before approval:
 Before delivery acceptance:
 
 1. Did the evidence demonstrate the shipped behavior, or only implementation activity?
-2. What remains assumed rather than verified, reviewed, or observed?
-3. Did new evidence change the priority, product direction, or next package?
-4. Does ordinary rework remain with Claude and final accountability with Codex?
+2. Does every delivery claim name the command or observation that proves it on the final artifact or runtime?
+3. What remains assumed rather than verified, reviewed, or observed?
+4. Did new evidence change the priority, product direction, or next package?
+5. Does ordinary rework remain with Claude and final accountability with Codex?
 
 After the validation window for `L1` and `L2`:
 

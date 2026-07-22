@@ -36,7 +36,7 @@ An API key or auth token must never appear in the routing file, command line, te
 
 The detached Run supervisor observes the exact Claude background session it launched.
 
-- `working`, `busy`, `queued`, `pending`, `blocked`, or an input-waiting state: keep waiting; these are non-terminal states. Claude reports ordinary permission prompts as `blocked`, so the Supervisor must preserve the same writer and surface `waitingFor` instead of recording a failure or launching fallback.
+- `working`, `busy`, `queued`, `pending`, `blocked`, or an input-waiting state: keep waiting; these are non-terminal states. Claude reports ordinary permission prompts as `blocked`, so the Supervisor records Run-local `WAITING_FOR_PERMISSION`, preserves the same writer, surfaces `waitingFor`, suppresses stall fallback, and resumes supervision only after the prompt clears.
 - `done`: close the supervisor successfully.
 - `stopped`: respect the stop and do not restart.
 - `failed` with an explicit quota, rate-limit, insufficient-balance, provider-authentication, overload, HTTP 5xx, or provider-gateway error: start the next profile once.
@@ -48,7 +48,7 @@ After the cause is understood, Codex may run `agent-os runtime-recover <project-
 
 Fallback chains must contain unique profiles. A routing cycle records every attempted profile before launch and refuses to exceed the chain length, so a bad configuration cannot create an infinite provider loop. Startup status checks fail closed, and a per-worktree launch mutex makes the status-check plus launch operation single-writer. Once a role cycle exists, only its Supervisor may advance to the exact `next_profile` recorded in `FALLBACK_STARTING`; an external `claude-start --profile fallback` cannot bypass discovery latency.
 
-Never run two write-capable Claude sessions concurrently in one worktree. The launch mutex is keyed by the canonical worktree path, so different Runs cannot race into the same worktree. A Builder with no observed job update for five minutes is marked `SUSPECTED_STALL`; a Reviewer uses fifteen minutes. This is an observability alert, not permission to start a second writer. Automatic fallback begins only after a terminal, explicitly classified provider/quota failure.
+Never run two write-capable Claude sessions concurrently in one worktree. The launch mutex is keyed by the canonical worktree path, so different Runs cannot race into the same worktree. A Builder with no observed job update for five minutes is marked `SUSPECTED_STALL`; a Reviewer uses fifteen minutes. Permission waits do not become stalls. These states are observability alerts, not permission to start a second writer. Automatic fallback begins only after a terminal, explicitly classified provider/quota failure.
 
 ## Commands
 

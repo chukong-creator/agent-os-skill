@@ -18,10 +18,10 @@ Every level preserves:
 | Level | Use when | Additional requirements | Deliberately omitted |
 |---|---|---|---|
 | `L0` | reversible, repository-local, no risk factors or external effects | delivery-level expected gain | mandatory Learning, Maturity Report, post-merge Outcome |
-| `L1` | normal product or technical delivery, including a reversible user-authorized release | mission, rationale, explicit Outcome Contract, Run Economics; a release also requires exact artifact hashes, live endpoint checks, and rollback verification | mandatory Director Challenge and five-question maturity |
+| `L1` | normal product or technical delivery, including a reversible user-authorized release | mission, rationale, explicit Outcome Contract, Run Economics; delivered artifacts also require exact hashes and claim-bound final-form acceptance checks | mandatory Director Challenge and five-question maturity |
 | `L2` | production, privacy, credentials, migration, deletion, payment, irreversible or otherwise material external effects | first principles, rejected alternative, tradeoff, rollback check, independent Director Challenge, Learning, five-question maturity | nothing from the full governed path |
 
-The deterministic validator rejects L0 with any risk factor or external side effect. It rejects non-L2 packages with production, privacy, credentials, database migration, data deletion, payment, or irreversible risk. A reversible L1 release is valid only when it declares a live delivery target, final artifact paths, endpoints, executable live checks, and rollback verification.
+The deterministic validator rejects L0 with any risk factor or external side effect. It rejects non-L2 packages with production, privacy, credentials, database migration, data deletion, payment, or irreversible risk. Schema revision 5 supports `repo`, `artifact`, `installable`, and `live`. Every non-repo target requires exact artifact paths and at least one `CLAIM::COMMAND` acceptance check; live additionally requires final endpoints, authorization, and rollback verification.
 
 ## L2 Director Challenge
 
@@ -41,4 +41,4 @@ The command hashes the review file and binds the result to a digest of the curre
 
 ## Legacy behavior
 
-Schema revision 3 packages continue as full-maturity legacy L2 packages after explicit upgrade. They do not retroactively require a v0.4 Director Challenge or post-merge Outcome Contract. New packages use schema revision 4.
+Schema revision 3 packages continue as full-maturity legacy L2 packages after explicit upgrade. They do not retroactively require a v0.4 Director Challenge or post-merge Outcome Contract. New packages use schema revision 5. Schema revision 4 release contracts retain their previous `live-check` behavior for compatibility.

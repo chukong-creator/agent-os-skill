@@ -206,6 +206,12 @@ class RoutingTests(unittest.TestCase):
             agent["state"], detail, ["builder", "fallback"], "builder",
         )
         self.assertEqual(decision, {"action": "wait", "state": "blocked"})
+        self.assertEqual(
+            AGENT_OS.permission_wait_status(agent["state"], detail),
+            "WAITING_FOR_PERMISSION",
+        )
+        self.assertIsNone(AGENT_OS.permission_wait_status("working", detail))
+        self.assertIsNone(AGENT_OS.permission_wait_status("blocked", "waiting for tests"))
 
     def test_runtime_failure_record_is_honest_when_cause_is_unknown(self) -> None:
         blocker, symptom, root_cause = AGENT_OS.runtime_failure_fields("runtime_unknown")

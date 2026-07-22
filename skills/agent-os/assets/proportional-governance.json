@@ -25,7 +25,8 @@
         "mission_alignment",
         "decision_rationale",
         "outcome_contract",
-        "governance_economics"
+        "governance_economics",
+        "final_form_acceptance_for_delivered_artifacts"
       ],
       "post_merge_outcome_required": true,
       "five_question_maturity_required": false
@@ -49,7 +50,8 @@
   "invariants": [
     "Priority expresses urgency and never lowers governance risk.",
     "Every level preserves one writer, exact Git identity, mechanical verification, and Codex acceptance.",
-    "Reversible user-authorized releases may use L1 only with exact artifact hashes, live endpoint checks, and rollback verification; material production, privacy, credential, payment, deletion, migration, or irreversible risk requires L2.",
+    "Artifact, installable, and live delivery require exact artifact hashes plus claim-bound checks against the final form the user receives.",
+    "Reversible user-authorized live releases may use L1 only with final endpoint acceptance and rollback verification; material production, privacy, credential, payment, deletion, migration, or irreversible risk requires L2.",
     "Missing telemetry stays null and is never estimated as verified fact."
   ]
 }

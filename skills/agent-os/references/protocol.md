@@ -27,7 +27,7 @@ Use the lightest level that honestly contains the risk:
 | Level | Intended use | Additional gates |
 |---|---|---|
 | `L0` | small, local, reversible change with no external effect | compact package; outcome follow-up and five-question maturity are not required |
-| `L1` | ordinary product or code delivery with measurable expected gain; reversible user-authorized releases | frozen Outcome Contract and post-merge outcome check; releases add exact artifact and live endpoint evidence |
+| `L1` | ordinary product or code delivery with measurable expected gain; reversible user-authorized releases | frozen Outcome Contract and post-merge outcome check; delivered artifacts add exact hashes and claim-bound acceptance checks against the final delivery form |
 | `L2` | production, privacy, credentials, migrations, deletion, payment, irreversible or materially consequential external work | full decision context, independent Director Challenge, Outcome Contract, learning, and five-question maturity |
 
 Declared high-risk factors force `L2`. Reversible external releases may use `L1` only with user authorization, rollback verification, exact final-artifact hashes, and real endpoint checks. Urgency never lowers the governance level. Every Agent OS Run retains the same deterministic safety floor: one writer, isolated worktree, path allowlist, exact commit, independent verifier, Codex decision, and merge gate.
@@ -45,7 +45,7 @@ CC Switch owns provider storage and credentials. Agent OS may resolve an existin
 
 ## State mapping
 
-Work Package and Run states use `DRAFT`, `READY`, `BUILDING`, `VERIFYING`, `READY_FOR_REVIEW`, `CODEX_REVIEWING`, `CHANGES_REQUESTED`, `REWORK`, `BLOCKED_DECISION`, `EVIDENCE_INCOMPLETE`, `RUNTIME_FAILED`, `LOCK_EXPIRED`, `ACCEPTED`, `MERGED`, `OUTCOME_PENDING`, `OUTCOME_CONFIRMED`, `OUTCOME_REFUTED`, `OUTCOME_INCONCLUSIVE`, `ROLLED_BACK`, `CODE_REVERTED_EXTERNAL_PENDING`, `ROLLBACK_FAILED`, or `CANCELLED`.
+Work Package and Run states use `DRAFT`, `READY`, `BUILDING`, `VERIFYING`, `READY_FOR_REVIEW`, `CODEX_REVIEWING`, `CHANGES_REQUESTED`, `REWORK`, `BLOCKED_DECISION`, `EVIDENCE_INCOMPLETE`, `RUNTIME_FAILED`, `LOCK_EXPIRED`, `ACCEPTED`, `MERGED`, `OUTCOME_PENDING`, `OUTCOME_CONFIRMED`, `OUTCOME_REFUTED`, `OUTCOME_INCONCLUSIVE`, `ROLLED_BACK`, `CODE_REVERTED_EXTERNAL_PENDING`, `ROLLBACK_FAILED`, or `CANCELLED`. Model supervision additionally exposes Run-local `WAITING_FOR_PERMISSION`; it does not release the writer lock or advance fallback.
 
 `L0` ends delivery at `MERGED`. New `L1` and `L2` Runs enter `OUTCOME_PENDING`; a hashed observation moves them to a terminal or revisitable outcome state. Delivery acceptance and outcome confirmation remain separate claims.
 
@@ -85,9 +85,11 @@ If any commit changes after verification, rerun evidence collection, Verifier, a
 
 Mechanical evidence includes full logs, exit codes, hashes, diff, paths, commit, and timestamps. Verifier results are independent evidence, not acceptance.
 
-Research packages also record source URI or path, publisher, access time, version or hash, claim, precise locator, and conflicts. UI packages add desktop/mobile render, console, overflow, and interaction evidence. A live delivery cannot be accepted from local development-server evidence: `verify` must hash the final declared artifact and pass every declared check against the exact live endpoint. Repackaging invalidates the artifact hash and requires verification again.
+Research packages also record source URI or path, publisher, access time, version or hash, claim, precise locator, and conflicts. UI packages add desktop/mobile render, console, overflow, and interaction evidence. Delivery targets are `repo`, `artifact`, `installable`, and `live`. The last three require `CLAIM::COMMAND` acceptance checks against the exact final artifact or runtime. A live delivery cannot be accepted from local development-server evidence; an installable app cannot be accepted from a source build alone. Repackaging, signing, upload, store processing, or any artifact hash change requires verification again.
 
-Run Economics measures observed wall-clock time, time to first evidence, verification time, event and retry counts, routing attempts, fallbacks, and observable governance overhead. Token usage remains `null` when the runtime does not expose trusted usage; Agent OS never invents it.
+Intermediate `CHANGES_REQUESTED` and `BLOCKED_DECISION` Review artifacts remain inside the ignored Run directory. Only the final `ACCEPTED` Review is committed to protected product history, avoiding base-branch churn that provides no accepted product truth.
+
+Run Economics measures observed wall-clock time, time to first evidence, verification time, event and retry counts, observed model launch events, fallbacks, and governance overhead. It records provider/model metadata when safely available. Token usage remains `null` when the runtime does not expose trusted usage; Agent OS never invents it.
 
 ## Protected actions
 

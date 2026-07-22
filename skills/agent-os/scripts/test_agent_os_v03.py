@@ -126,7 +126,7 @@ def test_migration(parent: Path) -> None:
     output = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
     assert output["from"] == "0.2" and output["to"] == "0.4" and output["database_backup"]
     with sqlite3.connect(os_root / "state.db") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}
         assert {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= columns
         assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

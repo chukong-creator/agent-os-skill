@@ -65,7 +65,7 @@ Upgrade refuses active writer locks, creates an SQLite online backup, validates 
 Shared invariants for every Agent OS Run: one writer, isolated worktree, scoped paths, exact commit Evidence, Mechanical Verifier, resolved failures, Codex Review, Merge Gate, and narrow rollback. Provider fallback is optional and finite when explicitly enabled.
 
 - `L0`: reversible repository-local work, no risk factors or external effects. Learning, Maturity, and post-merge Outcome are not mandatory.
-- `L1`: normal delivery, including a reversible user-authorized release. Requires mission, decision rationale, and an explicit post-merge Outcome Contract. A release additionally requires the final artifact, live endpoint, executable live checks, and rollback verification.
+- `L1`: normal delivery, including a reversible user-authorized release. Requires mission, decision rationale, and an explicit post-merge Outcome Contract. Any delivered artifact additionally requires the exact final artifact and claim-bound acceptance checks; live delivery also requires the final endpoint and rollback verification.
 - `L2`: high-impact or materially consequential external delivery. Adds first principles, alternative, tradeoff, rollback check, independent Director Challenge, Learning, and five-question maturity.
 
 High-risk factors such as production, privacy, credentials, migration, deletion, payment, and irreversible action require L2. A reversible release does not become L2 merely because it is external.
@@ -99,7 +99,18 @@ agent-os package-create <project-root> \
 agent-os package-ready <project-root> --id wp-001
 ```
 
-For a reversible live release, add the exact release contract. The live checks must exercise the declared endpoint; local dev-server checks do not qualify:
+## Accept the delivered form, not the source
+
+Classify what the user will actually receive:
+
+- `repo`: reviewed source/commit only.
+- `artifact`: an exported document, archive, media file, or other directly inspected output.
+- `installable`: an iOS, macOS, desktop, mobile, or packaged application that must be installed and launched in its declared test runtime.
+- `live`: a hosted page or service that must be exercised at its final endpoint, including authentication when the product requires it.
+
+For `artifact`, `installable`, and `live`, every `--acceptance-check` binds a plain-language claim to the command that proves it using `CLAIM::COMMAND`. A build command is not an install/launch check. An HTTP 200 is not an interaction check. Local source-page evidence is not evidence for a repackaged or hosted runtime.
+
+For a reversible live release, add the exact release contract. The acceptance check must exercise the declared endpoint and the core task; local dev-server checks do not qualify:
 
 ```bash
 agent-os package-create <project-root> \
@@ -107,13 +118,24 @@ agent-os package-create <project-root> \
   --goal "Publish a usable release" --expected-gain "Users can complete the core flow" \
   --delivery-target live --artifact-path dist \
   --live-endpoint "https://example.com/app" \
-  --live-check "node scripts/check-live.mjs https://example.com/app" \
+  --acceptance-check "Core flow works in the hosted runtime::node scripts/check-live.mjs https://example.com/app" \
   --external-side-effect "reversible static release" \
   --rollback-check "documented previous release restore" \
   <L1 decision and Outcome arguments>
 ```
 
-`verify` hashes files or directories declared by `--artifact-path`, runs every live check, and records the exact endpoints. Any rebuild, copy, rename, or repackaging changes the artifact hash and requires verification again. `review --decision ACCEPTED` rejects missing artifact or live-endpoint evidence.
+For an installable app, bind acceptance to the packaged runtime rather than the Xcode/project build:
+
+```bash
+agent-os package-create <project-root> \
+  --id wp-ios --work-unit <unit-id> --governance-level L1 \
+  --goal "Deliver an installable iOS build" --expected-gain "The packaged app installs and launches" \
+  --delivery-target installable --artifact-path build/Vitality.app \
+  --acceptance-check "App installs and launches in the simulator::scripts/check-ios-package.sh build/Vitality.app" \
+  <L1 decision and Outcome arguments>
+```
+
+`verify` hashes the declared final artifacts, runs every claim-bound acceptance check, and proves the checks did not mutate the artifacts. `review --decision ACCEPTED` reruns those checks against the unchanged artifact. Any rebuild, copy, rename, repackaging, signing, notarization, upload, or store processing creates a new delivery boundary and requires verification again.
 
 For L2, add `--risk-factor`, `--first-principles`, `--alternative OPTION::REASON`, `--tradeoff`, and any `--external-side-effect`, then record an independent challenge before `package-ready`:
 
@@ -149,7 +171,7 @@ agent-os maturity-report <project-root> --run run-wp-001-r1
 - Claude owns implementation and ordinary rework in the assigned Agent branch.
 - Run start freezes Decision Trace, Permission Manifest, Rollback Plan, and Outcome Contract; L2 also freezes the Director Challenge.
 - Mechanical Verifier checks Manifest PASS, exact commit, and evidence hashes. It never fixes or accepts.
-- `CHANGES_REQUESTED` returns the same worktree to Claude through `rework-start`.
+- `CHANGES_REQUESTED` returns the same worktree to Claude through `rework-start`. Intermediate Review artifacts stay Run-local; only the final `ACCEPTED` Review is committed to protected product history.
 - L0 merge ends at `MERGED`; L1/L2 merge ends at `OUTCOME_PENDING` and writes Run Economics.
 
 ## Route models without losing the writer
@@ -157,6 +179,8 @@ agent-os maturity-report <project-root> --run run-wp-001-r1
 Model routing is opt-in. `claude-start` inherits the normal Claude environment unless Codex explicitly passes `--profile` or `--routing-config`; the mere existence of `~/.config/agent-os/model-routing.json` does not select GLM, Kimi, or another provider. When enabled, routing resolves the Run role from read-only CC Switch metadata and injects provider configuration only into that Claude child process. It never mutates the global Provider or stores credentials.
 
 Builder and Reviewer use separate profiles. Only explicit terminal quota/provider failures advance through a finite unique chain. Unknown failures, manual stops, repeated profiles, and exhausted chains never loop. `SUSPECTED_STALL` observes inactivity without starting a second writer.
+
+Permission prompts remain non-terminal. Routing state becomes `WAITING_FOR_PERMISSION`, preserves the same writer, records what is awaited, and disables fallback until the wait ends. Run Economics counts observed launch events even when a routed-state file is reset; trusted token usage remains `null` when the runtime does not expose it.
 
 ## Validate Outcome and economics
 
