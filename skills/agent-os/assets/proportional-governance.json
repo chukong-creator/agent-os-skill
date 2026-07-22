@@ -1,7 +1,7 @@
 {
   "agent_os_version": "0.4",
   "policy_id": "proportional-governance",
-  "default_level": "L1",
+  "default_level": "L0",
   "levels": {
     "L0": {
       "purpose": "Low-risk, repository-local, reversible delivery",
@@ -49,7 +49,7 @@
   "invariants": [
     "Priority expresses urgency and never lowers governance risk.",
     "Every level preserves one writer, exact Git identity, mechanical verification, and Codex acceptance.",
-    "External side effects always require L2.",
+    "Reversible user-authorized releases may use L1 only with exact artifact hashes, live endpoint checks, and rollback verification; material production, privacy, credential, payment, deletion, migration, or irreversible risk requires L2.",
     "Missing telemetry stays null and is never estimated as verified fact."
   ]
 }

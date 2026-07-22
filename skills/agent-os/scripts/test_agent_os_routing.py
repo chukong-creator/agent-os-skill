@@ -87,6 +87,12 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(fallback_env["ANTHROPIC_DEFAULT_SONNET_MODEL"], "kimi-for-coding")
         self.assertEqual(reviewer_env["CLAUDE_CODE_SUBAGENT_MODEL"], "k3")
 
+    def test_routing_config_on_disk_does_not_opt_in_provider_spend(self) -> None:
+        with mock.patch.dict(os.environ, {"AGENT_OS_ROUTING_CONFIG": str(self.config)}):
+            metadata, provider_env = AGENT_OS.resolve_execution_profile(None, None)
+        self.assertIsNone(metadata)
+        self.assertIsNone(provider_env)
+
     def test_base_url_userinfo_never_enters_safe_metadata(self) -> None:
         db = sqlite3.connect(self.database)
         try:

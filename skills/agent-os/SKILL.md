@@ -1,11 +1,18 @@
 ---
 name: agent-os
-description: Build and operate Agent OS v0.4 for proportional, permission-bounded, outcome-aware multi-agent delivery. Use when Codex directs Claude Code or subagents through risk-tiered work packages, Git worktrees, single-writer locks, evidence, review, finite model fallback, outcomes, governance economics, safe rollback, or Agent OS health checks.
+description: Build and operate Agent OS v0.4 for proportional, permission-bounded delivery when work truly needs cross-Agent handoff, isolation, recovery, independent acceptance, or external-release evidence. Do not use it for a local reversible task that one Agent can finish and verify directly.
 ---
 
 # Agent OS
 
 Use Agent OS as the governance and evidence layer above Agent Shift. Keep Git reality, branches, worktrees, and merges in Agent Shift; keep work contracts, Runs, locks, evidence, review, Outcome, and Economics in `.agent-os/`.
+
+## Decide whether to use it
+
+- Default to direct single-Agent execution for local, reversible work that fits in one task. Do not initialize Agent OS, create a Work Package, or start model routing merely because code is being changed.
+- Use Agent OS when at least one need is real: cross-Agent handoff, isolated concurrent work, recovery across sessions, independent acceptance, or an authorized external release.
+- Keep one Builder and Codex acceptance by default. Add a separate Reviewer or routed fallback only when it has a concrete independent benefit.
+- A routing configuration on disk is not authorization to consume that provider. Builder routing is opt-in through an explicit `--profile` or `--routing-config`.
 
 ## Establish project truth
 
@@ -55,13 +62,13 @@ Upgrade refuses active writer locks, creates an SQLite online backup, validates 
 
 ## Choose governance level
 
-Shared invariants at every level: one writer, isolated worktree, scoped paths, exact commit Evidence, Mechanical Verifier, resolved failures, Codex Review, Merge Gate, finite fallback, and narrow rollback.
+Shared invariants for every Agent OS Run: one writer, isolated worktree, scoped paths, exact commit Evidence, Mechanical Verifier, resolved failures, Codex Review, Merge Gate, and narrow rollback. Provider fallback is optional and finite when explicitly enabled.
 
 - `L0`: reversible repository-local work, no risk factors or external effects. Learning, Maturity, and post-merge Outcome are not mandatory.
-- `L1`: normal delivery. Requires mission, decision rationale, and an explicit post-merge Outcome Contract.
-- `L2`: high-impact or external-effect delivery. Adds first principles, alternative, tradeoff, rollback check, independent Director Challenge, Learning, and five-question maturity.
+- `L1`: normal delivery, including a reversible user-authorized release. Requires mission, decision rationale, and an explicit post-merge Outcome Contract. A release additionally requires the final artifact, live endpoint, executable live checks, and rollback verification.
+- `L2`: high-impact or materially consequential external delivery. Adds first principles, alternative, tradeoff, rollback check, independent Director Challenge, Learning, and five-question maturity.
 
-High-risk factors such as production, privacy, credentials, migration, deletion, payment, irreversible action, and external effects require L2.
+High-risk factors such as production, privacy, credentials, migration, deletion, payment, and irreversible action require L2. A reversible release does not become L2 merely because it is external.
 
 ## Create a Work Package
 
@@ -91,6 +98,22 @@ agent-os package-create <project-root> \
   --allow app.js --verify "npm test" --rollback-check "npm test"
 agent-os package-ready <project-root> --id wp-001
 ```
+
+For a reversible live release, add the exact release contract. The live checks must exercise the declared endpoint; local dev-server checks do not qualify:
+
+```bash
+agent-os package-create <project-root> \
+  --id wp-release --work-unit <unit-id> --governance-level L1 \
+  --goal "Publish a usable release" --expected-gain "Users can complete the core flow" \
+  --delivery-target live --artifact-path dist \
+  --live-endpoint "https://example.com/app" \
+  --live-check "node scripts/check-live.mjs https://example.com/app" \
+  --external-side-effect "reversible static release" \
+  --rollback-check "documented previous release restore" \
+  <L1 decision and Outcome arguments>
+```
+
+`verify` hashes files or directories declared by `--artifact-path`, runs every live check, and records the exact endpoints. Any rebuild, copy, rename, or repackaging changes the artifact hash and requires verification again. `review --decision ACCEPTED` rejects missing artifact or live-endpoint evidence.
 
 For L2, add `--risk-factor`, `--first-principles`, `--alternative OPTION::REASON`, `--tradeoff`, and any `--external-side-effect`, then record an independent challenge before `package-ready`:
 
@@ -131,7 +154,7 @@ agent-os maturity-report <project-root> --run run-wp-001-r1
 
 ## Route models without losing the writer
 
-When `~/.config/agent-os/model-routing.json` exists, `claude-start` resolves the Run role from read-only CC Switch metadata and injects provider configuration only into that Claude child process. It never mutates the global Provider or stores credentials.
+Model routing is opt-in. `claude-start` inherits the normal Claude environment unless Codex explicitly passes `--profile` or `--routing-config`; the mere existence of `~/.config/agent-os/model-routing.json` does not select GLM, Kimi, or another provider. When enabled, routing resolves the Run role from read-only CC Switch metadata and injects provider configuration only into that Claude child process. It never mutates the global Provider or stores credentials.
 
 Builder and Reviewer use separate profiles. Only explicit terminal quota/provider failures advance through a finite unique chain. Unknown failures, manual stops, repeated profiles, and exhausted chains never loop. `SUSPECTED_STALL` observes inactivity without starting a second writer.
 

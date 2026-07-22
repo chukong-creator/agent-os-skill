@@ -27,10 +27,10 @@ Use the lightest level that honestly contains the risk:
 | Level | Intended use | Additional gates |
 |---|---|---|
 | `L0` | small, local, reversible change with no external effect | compact package; outcome follow-up and five-question maturity are not required |
-| `L1` | ordinary product or code delivery with measurable expected gain | frozen Outcome Contract and post-merge outcome check |
-| `L2` | production, privacy, credentials, migrations, deletion, payment, irreversible or external-side-effect work | full decision context, independent Director Challenge, Outcome Contract, learning, and five-question maturity |
+| `L1` | ordinary product or code delivery with measurable expected gain; reversible user-authorized releases | frozen Outcome Contract and post-merge outcome check; releases add exact artifact and live endpoint evidence |
+| `L2` | production, privacy, credentials, migrations, deletion, payment, irreversible or materially consequential external work | full decision context, independent Director Challenge, Outcome Contract, learning, and five-question maturity |
 
-Declared high-risk factors or external side effects force `L2`. Urgency never lowers the governance level. Every level retains the same deterministic safety floor: one writer, isolated worktree, path allowlist, exact commit, independent verifier, Codex decision, and merge gate.
+Declared high-risk factors force `L2`. Reversible external releases may use `L1` only with user authorization, rollback verification, exact final-artifact hashes, and real endpoint checks. Urgency never lowers the governance level. Every Agent OS Run retains the same deterministic safety floor: one writer, isolated worktree, path allowlist, exact commit, independent verifier, Codex decision, and merge gate.
 
 ## Roles
 
@@ -85,7 +85,7 @@ If any commit changes after verification, rerun evidence collection, Verifier, a
 
 Mechanical evidence includes full logs, exit codes, hashes, diff, paths, commit, and timestamps. Verifier results are independent evidence, not acceptance.
 
-Research packages also record source URI or path, publisher, access time, version or hash, claim, precise locator, and conflicts. UI packages add desktop/mobile render, console, overflow, and interaction evidence.
+Research packages also record source URI or path, publisher, access time, version or hash, claim, precise locator, and conflicts. UI packages add desktop/mobile render, console, overflow, and interaction evidence. A live delivery cannot be accepted from local development-server evidence: `verify` must hash the final declared artifact and pass every declared check against the exact live endpoint. Repackaging invalidates the artifact hash and requires verification again.
 
 Run Economics measures observed wall-clock time, time to first evidence, verification time, event and retry counts, routing attempts, fallbacks, and observable governance overhead. Token usage remains `null` when the runtime does not expose trusted usage; Agent OS never invents it.
 

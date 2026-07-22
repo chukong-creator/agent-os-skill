@@ -11,6 +11,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Rank work explicitly. Prefer one high-leverage package over many plausible activities.
 - Reject packages that cannot explain their mission alignment, expected gain, or why they should happen now.
 - Select the lightest governance level that honestly contains the risk. Urgency may raise priority, but it never lowers risk.
+- Do not start Agent OS for a local, reversible task that one Agent can safely finish and verify in the current task. Use Agent OS when handoff, isolation, recovery, independent acceptance, or an external release materially needs it.
 
 ## Execution and cognition
 
@@ -26,6 +27,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Maintain a position without territorial behavior. Invite critique, share relevant context, and optimize for the whole product rather than a tool, model, or department.
 - Communicate plainly. Name the problem, evidence, tradeoff, owner, and next decision without status theater or bureaucratic padding.
 - Use multiple Agents only when independence, isolation, and measurable parallel benefit exist.
+- Model routing is opt-in. A routing configuration on disk is not permission to spend another provider's quota.
 - For `L2`, require an independent Director Challenge before approval; the challenger tests the package and does not become a second implementation owner.
 
 ## Accountability and results

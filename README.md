@@ -12,7 +12,9 @@
   <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
 </p>
 
-Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。
+Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用的 AI 软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与可选的有限模型兜底**，处理真正需要跨 Agent 交接、隔离、恢复、独立验收或外部发布的工作。
+
+> 本地、可逆、一个 Agent 能在当前任务完成并验证的改动，默认直接做，不启动 Agent OS。治理成本必须小于它降低的交付风险。
 
 > **Codex** 是产品与技术总监：定义目标、边界、验收标准并作最终决策。
 >
@@ -83,10 +85,10 @@ flowchart TD
 | 等级 | 何时使用 | 额外要求 | 合并后 |
 |---|---|---|---|
 | **L0** | 小、局部、可逆、无外部副作用 | 精简上下文；仍保留单写者、权限、Evidence、Verifier、Review、Merge Gate | `MERGED` |
-| **L1** | 普通产品或代码交付，需要验证真实收益 | 开工前冻结 Outcome Contract | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
-| **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或外部副作用 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L1** | 普通产品或代码交付；可逆且经用户授权的发布 | 开工前冻结 Outcome Contract；发布还要绑定最终制品哈希、真实端点检查与回滚验证 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或其他重大外部影响 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
 
-高风险因子和外部副作用会机械强制 `L2`。优先级高不等于风险低；再紧急也不能降低治理等级。
+生产、隐私、凭据、迁移、删除、付款和不可逆风险会机械强制 `L2`。可逆发布可使用 `L1`，但缺少最终制品哈希或真实端点检查时不能 `ACCEPTED`。优先级高不等于风险低；再紧急也不能降低治理等级。
 
 ### 一个交付怎样流动
 
@@ -126,7 +128,7 @@ stateDiagram-v2
 - **模型额度或 Provider 不稳定**：可配置角色路由和有限 fallback，失败显式终止。
 - **高风险、长期演进的产品**：权限、失败位置、回滚与学习都有可审计记录。
 
-一次性低风险修改可以走 L0；确实不需要跨 Agent、审计或恢复时，直接使用一个 Agent 仍然更轻。Agent OS 的价值出现在**任务跨轮次、跨模型、需要验收或必须恢复**的时候。
+确实不需要跨 Agent、隔离、审计、恢复或外部发布时，直接使用一个 Agent。只有仍需治理但风险较低的跨轮次工作才走 L0。Agent OS 的价值出现在**任务跨轮次、跨模型、需要独立验收、外部发布或必须恢复**的时候。
 
 ## 快速开始
 
@@ -370,7 +372,7 @@ sequenceDiagram
 
 ## CC Switch 模型路由与额度兜底
 
-模型路由是可选能力。Agent OS 只读 CC Switch 的 Claude Provider 配置，把选中的环境变量注入**当前 Claude 子进程**；不会改变 CC Switch 的全局当前 Provider，也不会把 API Key 写入命令、日志或 Evidence。
+模型路由是显式启用的可选能力。仅仅存在配置文件不会选择 Provider 或消耗额度；必须在启动时明确传入 `--profile` 或 `--routing-config`。Agent OS 只读 CC Switch 的 Claude Provider 配置，把选中的环境变量注入**当前 Claude 子进程**；不会改变 CC Switch 的全局当前 Provider，也不会把 API Key 写入命令、日志或 Evidence。
 
 ```bash
 mkdir -p "$HOME/.config/agent-os"

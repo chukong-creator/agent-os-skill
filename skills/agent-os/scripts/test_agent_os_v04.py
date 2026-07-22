@@ -51,7 +51,7 @@ def test_l0_lightweight(parent: Path) -> None:
     initialize(root, "l0")
     call([
         AGENT_OS, "package-create", str(root), "--id", "wp-l0", "--work-unit", "default",
-        "--governance-level", "L0", "--goal", "Make a small verified change",
+        "--goal", "Make a small verified change",
         "--expected-gain", "The repository contains the verified success marker",
         "--allow", "app.txt", "--verify", "grep -q success app.txt",
         "--rollback-check", "grep -q base app.txt",
@@ -69,6 +69,55 @@ def test_l0_lightweight(parent: Path) -> None:
     assert economics["token_usage"]["input_tokens"] is None
     assert economics["token_usage"]["source"] == "unavailable-from-runtime"
     call([AGENT_OS, "doctor", str(root), "--strict"], root)
+
+
+def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> None:
+    root = parent / "l1-live"
+    initialize(root, "l1-live")
+    endpoint = "https://example.invalid/demo"
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-live-no-rollback", "--work-unit", "default",
+        "--governance-level", "L1", "--goal", "Reject a release without an explicit rollback check",
+        "--objective", "Prove reversible release validation", "--mission-alignment", "Keep release recovery real",
+        "--priority", "P1", "--expected-gain", "An incomplete release contract cannot start",
+        "--selected-approach", "Exercise release validation", "--rationale", "A build command is not a release rollback",
+        *l1_outcome_args(), "--allow", "app.txt", "--verify", "grep -q success app.txt",
+        "--delivery-target", "live", "--artifact-path", "app.txt", "--live-endpoint", endpoint,
+        "--live-check", f"endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\"",
+        "--external-side-effect", "reversible static demo release",
+    ], root)
+    call([AGENT_OS, "package-ready", str(root), "--id", "wp-live-no-rollback"], root, expected=2)
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-live", "--work-unit", "default",
+        "--governance-level", "L1", "--goal", "Accept only the final usable live release",
+        "--objective", "Bind release acceptance to the exact artifact and endpoint",
+        "--mission-alignment", "Prevent local-only evidence from claiming a live result",
+        "--priority", "P1", "--expected-gain", "The declared endpoint passes its core release check",
+        "--selected-approach", "Hash the final artifact and recheck the endpoint at acceptance",
+        "--rationale", "Repackaging and deployment can invalidate local browser evidence",
+        *l1_outcome_args(), "--allow", "app.txt", "--verify", "grep -q success app.txt",
+        "--delivery-target", "live", "--artifact-path", "app.txt",
+        "--live-endpoint", endpoint,
+        "--live-check", f"endpoint={endpoint}; test \"$endpoint\" = \"{endpoint}\" && grep -q success app.txt",
+        "--external-side-effect", "reversible static demo release",
+        "--rollback-check", "grep -q base app.txt",
+    ], root)
+    worktree = deliver_candidate(root, "wp-live", "run-live")
+    manifest_path = root / ".agent-os/runs/run-live/evidence/manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["delivery"]["target"] == "live"
+    assert manifest["delivery"]["live_endpoints"] == [endpoint]
+    assert manifest["delivery"]["artifact_evidence"][0]["sha256"]
+    write(worktree / "app.txt", "changed after verification\n")
+    call([
+        AGENT_OS, "review", str(root), "--run", "run-live", "--decision", "ACCEPTED",
+        "--summary", "A changed release artifact must invalidate prior evidence",
+    ], root, expected=2)
+    write(worktree / "app.txt", "success\n")
+    call([
+        AGENT_OS, "review", str(root), "--run", "run-live", "--decision", "ACCEPTED",
+        "--summary", "The final artifact and live endpoint are rechecked at acceptance",
+    ], root)
 
 
 def test_l1_outcome_and_rollback(parent: Path) -> None:
@@ -293,6 +342,7 @@ def main() -> int:
     parent = Path(tempfile.mkdtemp(prefix="agent-os-v04-", dir="/tmp"))
     try:
         test_l0_lightweight(parent)
+        test_l1_live_delivery_binds_final_artifact_and_endpoint(parent)
         test_l1_outcome_and_rollback(parent)
         test_l1_refuted_outcome(parent)
         test_l2_challenge_and_maturity(parent)
@@ -302,7 +352,7 @@ def main() -> int:
         print(json.dumps({
             "result": "PASS", "workspace": str(parent),
             "scenarios": [
-                "L0-lightweight", "L1-risk-forces-L2", "L1-outcome-contract",
+                "L0-default-lightweight", "L1-live-artifact-endpoint-gate", "L1-risk-forces-L2", "L1-outcome-contract",
                 "outcome-inconclusive", "outcome-confirmed", "outcome-refuted",
                 "outcome-safe-rollback", "L2-director-challenge", "L2-maturity",
                 "governance-economics", "v03-explicit-migration", "migration-active-lock-refusal",

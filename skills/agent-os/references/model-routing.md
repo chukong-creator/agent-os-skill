@@ -6,6 +6,8 @@ CC Switch is the user-owned source for Claude provider endpoints and credentials
 
 The user-level routing file is `~/.config/agent-os/model-routing.json`. It contains provider names or ids, models, effort levels, and fallback chains, but never credentials.
 
+Routing is opt-in. The presence of this file alone never authorizes provider selection or quota consumption. A Builder inherits the normal Claude environment unless Codex passes `--profile` or `--routing-config`; finite supervision starts only for an explicitly routed launch.
+
 ## Example role chains
 
 | Mode | Primary | Fallback | Permission |

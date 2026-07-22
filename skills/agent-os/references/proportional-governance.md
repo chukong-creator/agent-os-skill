@@ -18,10 +18,10 @@ Every level preserves:
 | Level | Use when | Additional requirements | Deliberately omitted |
 |---|---|---|---|
 | `L0` | reversible, repository-local, no risk factors or external effects | delivery-level expected gain | mandatory Learning, Maturity Report, post-merge Outcome |
-| `L1` | normal product or technical delivery | mission, rationale, explicit Outcome Contract, Run Economics | mandatory Director Challenge and five-question maturity |
-| `L2` | production, privacy, credentials, migration, deletion, payment, irreversible or external effects | first principles, rejected alternative, tradeoff, rollback check, independent Director Challenge, Learning, five-question maturity | nothing from the full governed path |
+| `L1` | normal product or technical delivery, including a reversible user-authorized release | mission, rationale, explicit Outcome Contract, Run Economics; a release also requires exact artifact hashes, live endpoint checks, and rollback verification | mandatory Director Challenge and five-question maturity |
+| `L2` | production, privacy, credentials, migration, deletion, payment, irreversible or otherwise material external effects | first principles, rejected alternative, tradeoff, rollback check, independent Director Challenge, Learning, five-question maturity | nothing from the full governed path |
 
-The deterministic validator rejects L0 with any risk factor or external side effect. It rejects non-L2 packages with production, privacy, credentials, database migration, data deletion, payment, irreversible, or external-side-effect risk factors.
+The deterministic validator rejects L0 with any risk factor or external side effect. It rejects non-L2 packages with production, privacy, credentials, database migration, data deletion, payment, or irreversible risk. A reversible L1 release is valid only when it declares a live delivery target, final artifact paths, endpoints, executable live checks, and rollback verification.
 
 ## L2 Director Challenge
 
