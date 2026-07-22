@@ -493,6 +493,7 @@ cd agent-os-skill
 开发验证：
 
 ```bash
+python3 skills/agent-shift/scripts/test_agent_shift_views.py
 python3 skills/agent-os/scripts/test_agent_os_routing.py
 python3 skills/agent-os/scripts/test_agent_os_v04.py
 python3 skills/agent-os/scripts/test_agent_os_v03.py
