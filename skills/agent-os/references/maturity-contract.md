@@ -1,4 +1,4 @@
-# Agent OS v0.4 five-question maturity contract
+# Agent OS v0.5 five-question maturity contract
 
 ## Scope
 

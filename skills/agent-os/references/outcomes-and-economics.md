@@ -1,4 +1,4 @@
-# Agent OS v0.4 outcomes and governance economics
+# Agent OS v0.5 outcomes and governance economics
 
 ## Delivery is not the outcome
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent OS v0.4 proportional, outcome-aware delivery control plane."""
+"""Agent OS v0.5 proportional delivery and context control plane."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -22,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-AGENT_OS_VERSION = "0.4"
-SCHEMA_REVISION = 4
+AGENT_OS_VERSION = "0.5"
+SCHEMA_REVISION = 5
 DEFAULT_LOCK_SECONDS = 7200
 DECISIONS = {"ACCEPTED", "CHANGES_REQUESTED", "BLOCKED_DECISION"}
 GOVERNANCE_LEVELS = {"L0", "L1", "L2"}
@@ -31,8 +32,9 @@ OUTCOME_RESULTS = {"CONFIRMED", "REFUTED", "INCONCLUSIVE"}
 OUTCOME_STATES = {f"OUTCOME_{value}" for value in OUTCOME_RESULTS} | {"OUTCOME_PENDING"}
 L2_RISK_FACTORS = {
     "production", "privacy", "credentials", "database-migration", "data-deletion",
-    "payment", "irreversible", "external-side-effect",
+    "payment", "irreversible",
 }
+DELIVERY_TARGETS = {"repo", "artifact", "installable", "live"}
 FAILURE_CATEGORIES = {
     "goal_contract", "context", "permission", "implementation", "verification",
     "dependency", "runtime", "merge", "external_service", "governance", "unknown",
@@ -76,6 +78,15 @@ NON_RETRYABLE_RUNTIME_PATTERNS = (
     "working directory no longer exists", "worktree does not exist", "permission denied",
     "agent os routing config", "cc switch database", "unsupported provider schema",
 )
+CONTEXT_LINE_BUDGETS = {
+    "global_agents": 80,
+    "project_agents": 100,
+    "claude": 100,
+    "skill": 160,
+}
+MARKDOWN_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$")
+MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+ABSOLUTE_CONTEXT_PATH = re.compile(r"`(/[^`]+(?:\.(?:md|MD)|/SKILL\.md))`")
 
 
 def now() -> datetime:
@@ -105,6 +116,200 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object: {path}")
     return value
+
+
+def context_kind(path: Path, project: Path, global_agents: Path | None) -> str:
+    if global_agents and path == global_agents:
+        return "global_agents"
+    if path == project / "AGENTS.md":
+        return "project_agents"
+    if path.name == "CLAUDE.md":
+        return "claude"
+    return "skill"
+
+
+def normalize_instruction(value: str) -> str:
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"\[[^\]]+\]\([^)]+\)", "", value)
+    value = re.sub(r"[*_>#]", " ", value)
+    value = re.sub(r"[^\w\u4e00-\u9fff]+", " ", value.lower())
+    return " ".join(value.split())
+
+
+def markdown_instructions(path: Path, text: str) -> list[dict[str, Any]]:
+    instructions: list[dict[str, Any]] = []
+    in_fence = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = MARKDOWN_BULLET.match(line)
+        if not match:
+            continue
+        normalized = normalize_instruction(match.group(1))
+        if len(normalized) < 20:
+            continue
+        instructions.append({
+            "path": str(path),
+            "line": number,
+            "text": match.group(1).strip(),
+            "normalized": normalized,
+        })
+    return instructions
+
+
+def context_references(path: Path, text: str) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    candidates = [match.group(1).split("#", 1)[0] for match in MARKDOWN_LINK.finditer(text)]
+    candidates.extend(match.group(1) for match in ABSOLUTE_CONTEXT_PATH.finditer(text))
+    for raw in dict.fromkeys(candidates):
+        if not raw or re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.IGNORECASE) or raw.startswith("#"):
+            continue
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = path.parent / target
+        target = target.resolve()
+        references.append({"source": str(path), "target": str(target), "exists": target.is_file()})
+    return references
+
+
+def cmd_context_doctor(args: argparse.Namespace) -> int:
+    project = Path(args.project).expanduser().resolve()
+    if not project.is_dir():
+        raise ValueError(f"context project does not exist: {project}")
+    global_agents: Path | None = None
+    if args.include_global:
+        configured = Path(args.global_agents).expanduser() if args.global_agents else Path(
+            os.environ.get("CODEX_HOME", "~/.codex")
+        ).expanduser() / "AGENTS.md"
+        global_agents = configured.resolve()
+    if any(value <= 0 for value in (
+        args.max_global_lines, args.max_project_lines,
+        args.max_claude_lines, args.max_skill_lines,
+    )):
+        raise ValueError("context line budgets must be positive")
+
+    requested: list[Path] = []
+    if global_agents:
+        requested.append(global_agents)
+    requested.extend((project / "AGENTS.md", project / "CLAUDE.md"))
+    requested.extend(Path(value).expanduser().resolve() for value in args.skill)
+    paths = list(dict.fromkeys(path for path in requested if path.is_file()))
+
+    budgets = {
+        "global_agents": args.max_global_lines,
+        "project_agents": args.max_project_lines,
+        "claude": args.max_claude_lines,
+        "skill": args.max_skill_lines,
+    }
+    files: list[dict[str, Any]] = []
+    all_instructions: list[dict[str, Any]] = []
+    references: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    required_paths = ([global_agents] if global_agents else []) + [
+        Path(value).expanduser().resolve() for value in args.skill
+    ]
+    for path in dict.fromkeys(required_paths):
+        if path and not path.is_file():
+            findings.append({
+                "severity": "FAIL",
+                "code": "MISSING_CONTEXT_INPUT",
+                "path": str(path),
+                "message": "explicit context input does not exist",
+            })
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        kind = context_kind(path, project, global_agents)
+        lines = len(text.splitlines())
+        instructions = markdown_instructions(path, text)
+        file_references = context_references(path, text)
+        files.append({
+            "path": str(path),
+            "kind": kind,
+            "lines": lines,
+            "words": len(text.split()),
+            "characters": len(text),
+            "instructions": len(instructions),
+            "references": len(file_references),
+            "line_budget": budgets[kind],
+        })
+        all_instructions.extend(instructions)
+        references.extend(file_references)
+        if lines > budgets[kind]:
+            findings.append({
+                "severity": "WARN",
+                "code": "CONTEXT_BUDGET_EXCEEDED",
+                "path": str(path),
+                "message": f"{kind} has {lines} lines; budget is {budgets[kind]}",
+            })
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for instruction in all_instructions:
+        grouped.setdefault(str(instruction["normalized"]), []).append(instruction)
+    for occurrences in grouped.values():
+        locations = {(item["path"], item["line"]) for item in occurrences}
+        if len(locations) < 2:
+            continue
+        findings.append({
+            "severity": "WARN",
+            "code": "DUPLICATE_INSTRUCTION",
+            "message": occurrences[0]["text"],
+            "locations": [
+                {"path": item["path"], "line": item["line"]}
+                for item in occurrences
+            ],
+        })
+    for reference in references:
+        if not reference["exists"]:
+            findings.append({
+                "severity": "FAIL",
+                "code": "BROKEN_CONTEXT_REFERENCE",
+                "path": reference["source"],
+                "message": f"missing referenced file: {reference['target']}",
+            })
+
+    failures = sum(item["severity"] == "FAIL" for item in findings)
+    warnings = sum(item["severity"] == "WARN" for item in findings)
+    status = "FAIL" if failures else ("WARN" if warnings else "PASS")
+    report = {
+        "agent_os_version": AGENT_OS_VERSION,
+        "project": str(project),
+        "mutated": False,
+        "status": status,
+        "summary": {
+            "files": len(files),
+            "lines": sum(item["lines"] for item in files),
+            "words": sum(item["words"] for item in files),
+            "failures": failures,
+            "warnings": warnings,
+        },
+        "files": files,
+        "findings": findings,
+        "principle": "Keep non-derivable boundaries always on; defer procedures and rich references until relevant.",
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for item in files:
+            print(
+                f"{'PASS' if item['lines'] <= item['line_budget'] else 'WARN':4} "
+                f"{item['kind']:14} lines={item['lines']}/{item['line_budget']} "
+                f"words={item['words']} refs={item['references']} {item['path']}"
+            )
+        for finding in findings:
+            locations = finding.get("locations")
+            location_text = (
+                ", ".join(f"{item['path']}:{item['line']}" for item in locations)
+                if locations else str(finding.get("path", ""))
+            )
+            print(f"{finding['severity']:4} {finding['code']} {location_text} {finding['message']}")
+        print(
+            f"SUMMARY status={status} failures={failures} warnings={warnings} "
+            f"files={len(files)} lines={report['summary']['lines']} words={report['summary']['words']}"
+        )
+    return 1 if failures or (args.strict and warnings) else 0
 
 
 def default_routing_config_path() -> Path:
@@ -197,6 +402,8 @@ def load_routing_config(path: Path) -> dict[str, Any]:
 def resolve_execution_profile(profile_name: str | None, config_path: Path | None = None) -> tuple[dict[str, Any] | None, dict[str, str] | None]:
     if profile_name == "inherit":
         return None, None
+    if profile_name is None and config_path is None:
+        return None, None
     path = (config_path or default_routing_config_path()).expanduser().resolve()
     if not path.is_file():
         if profile_name is None:
@@ -272,12 +479,15 @@ def runtime_recovery_decision(
     state: str | None, detail: str | None, chain: list[str], current_profile: str,
     attempted_profiles: list[str] | None = None, failure_category: str | None = None,
 ) -> dict[str, Any]:
-    normalized_state = (state or "unknown").lower()
-    if normalized_state in {"running", "active", "starting", "unknown"}:
+    normalized_state = (state or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized_state in {
+        "running", "active", "starting", "unknown", "working", "busy", "idle",
+        "queued", "pending", "waiting", "blocked", "needs_input", "awaiting_input",
+    }:
         return {"action": "wait", "state": normalized_state}
-    if normalized_state == "done":
+    if normalized_state in {"done", "completed", "succeeded"}:
         return {"action": "complete", "state": normalized_state}
-    if normalized_state == "stopped":
+    if normalized_state in {"stopped", "cancelled", "canceled", "interrupted"}:
         return {"action": "stop", "state": normalized_state, "category": "operator_or_runtime_stop"}
     category = failure_category or classify_runtime_failure(detail)
     if category != "provider_or_quota":
@@ -318,7 +528,8 @@ def validate_routing_launch_authorization(
         if not authorized:
             raise ValueError("internal fallback launch requires Supervisor authorization in routing state")
         return
-    if state and state.get("mode") == mode and state.get("status") != "REWORK_READY":
+    restart_states = {"REWORK_READY", "RUNTIME_RECOVERY_READY"}
+    if state and state.get("mode") == mode and state.get("status") not in restart_states:
         raise ValueError("a routing cycle already exists for this role; only its Supervisor may advance profiles")
 
 
@@ -391,7 +602,7 @@ def parse_agent_activity(value: Any) -> datetime | None:
 
 
 def safe_agent_status(agent: dict[str, Any]) -> tuple[str, datetime | None]:
-    detail = str(agent.get("detail") or "")
+    detail = str(agent.get("detail") or agent.get("waitingFor") or "")
     activity_at = parse_agent_activity(agent.get("updatedAt") or agent.get("startedAt"))
     identifier = str(agent.get("id") or "")
     if identifier and len(identifier) <= 16:
@@ -406,17 +617,39 @@ def safe_agent_status(agent: dict[str, Any]) -> tuple[str, datetime | None]:
     return detail, activity_at
 
 
+def runtime_failure_fields(category: str) -> tuple[str, str, str]:
+    if category == "runtime_unknown":
+        return (
+            "unverifiable",
+            "Claude execution entered an unsupported or terminal runtime state.",
+            "The Supervisor could not determine the root cause; diagnosis is pending.",
+        )
+    if category.startswith("routing_"):
+        return (
+            "contradiction",
+            f"Claude routing state became inconsistent: {category}",
+            "The recorded routing cycle could not authorize a safe next profile.",
+        )
+    if category.startswith("provider_or_quota"):
+        return (
+            "new-authority-required",
+            f"Claude execution exhausted the authorized provider route: {category}",
+            "The finite authorized provider chain could not continue.",
+        )
+    return (
+        "new-authority-required",
+        f"Claude execution could not continue: {category}",
+        "The local execution environment prevented continuation.",
+    )
+
+
 def mark_runtime_failed(root: Path, run_id: str, category: str) -> None:
     with db_connect(root) as db:
         row = active_run(db, run_id)
         db.execute("UPDATE runs SET status='RUNTIME_FAILED', ended_at=? WHERE id=?", (now_iso(), run_id))
         db.execute("UPDATE work_packages SET status='RUNTIME_FAILED', updated_at=? WHERE id=?", (now_iso(), row["package_id"]))
-    record_failure(
-        root, run_id, "BUILDING", "runtime", "new-authority-required",
-        f"Claude execution could not continue after finite provider fallback: {category}",
-        "The authorized fallback chain is exhausted or the local execution environment is unavailable.",
-        [str(routing_state_path(root, run_id))],
-    )
+    blocker_class, symptom, root_cause = runtime_failure_fields(category)
+    record_failure(root, run_id, "BUILDING", "runtime", blocker_class, symptom, root_cause, [str(routing_state_path(root, run_id))])
     update_routing_state(root, run_id, status="RUNTIME_FAILED", terminal_category=category, ended_at=now_iso())
     append_event(root, run_id, "system", "routing_failed", "Finite model fallback could not continue", category=category)
 
@@ -444,6 +677,27 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(65536), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def path_sha256(path: Path) -> tuple[str, int, int]:
+    if path.is_file():
+        return sha256(path), 1, path.stat().st_size
+    if not path.is_dir():
+        raise FileNotFoundError(f"artifact path does not exist: {path}")
+    digest = hashlib.sha256()
+    files = sorted(item for item in path.rglob("*") if item.is_file())
+    total_size = 0
+    for item in files:
+        relative = item.relative_to(path).as_posix()
+        size = item.stat().st_size
+        total_size += size
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(sha256(item).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(str(size).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest(), len(files), total_size
 
 
 def run(command: list[str], cwd: Path, timeout: int = 300, env: dict[str, str] | None = None) -> tuple[int, str]:
@@ -569,7 +823,7 @@ def init_db(root: Path, allow_migration: bool = False) -> None:
         if not existed or allow_migration:
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations VALUES(?,?,?)",
-                (SCHEMA_REVISION, now_iso(), "agent-os-v0.4-proportional-outcomes-economics"),
+                (SCHEMA_REVISION, now_iso(), "agent-os-v0.4-delivery-acceptance"),
             )
             db.execute(f"PRAGMA user_version = {SCHEMA_REVISION}")
 
@@ -594,6 +848,27 @@ def safe_split(value: str) -> tuple[str, str]:
     if not separator or not left.strip() or not right.strip():
         raise ValueError("expected OPTION::REASON")
     return left.strip(), right.strip()
+
+
+def parse_acceptance_checks(values: list[str]) -> list[dict[str, str]]:
+    checks: list[dict[str, str]] = []
+    for value in values:
+        try:
+            claim, command = safe_split(value)
+        except ValueError as error:
+            raise ValueError("expected CLAIM::COMMAND for --acceptance-check") from error
+        checks.append({"claim": claim, "command": command})
+    return checks
+
+
+def permission_wait_status(state: str | None, detail: str | None) -> str | None:
+    normalized_state = str(state or "").strip().lower().replace("_", "-")
+    normalized_detail = str(detail or "").strip().lower()
+    if normalized_state not in {"blocked", "needs input", "needs-input", "awaiting-input", "waiting"}:
+        return None
+    if any(token in normalized_detail for token in ("permission", "approval", "authorize", "authorise")):
+        return "WAITING_FOR_PERMISSION"
+    return None
 
 
 def contract_digest(contract: dict[str, Any]) -> str:
@@ -706,7 +981,7 @@ def cmd_init(args: argparse.Namespace) -> int:
             "protected_paths": [".agent-os", ".agent-shift", ".githooks", ".claude/settings.json", "AGENTS.md", "CLAUDE.md", "secrets"],
             "high_risk_operations": ["deploy", "publish", "credential_access", "private_data", "database_migration", "data_deletion", "destructive_git", "push"],
             "lock_ttl_seconds": DEFAULT_LOCK_SECONDS,
-            "default_governance_level": "L1",
+            "default_governance_level": "L0",
         })
         created.append(str(project_file.relative_to(root)))
     policy = target / "policy" / "evidence-review.json"
@@ -716,8 +991,8 @@ def cmd_init(args: argparse.Namespace) -> int:
             "evidence_levels": ["verified", "reviewed", "observed", "assumed"],
             "acceptance_requires_by_level": {
                 "L0": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "merge_gate_pass", "codex_review"],
-                "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "outcome_contract", "merge_gate_pass", "codex_review"],
-                "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
+                "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "outcome_contract", "merge_gate_pass", "codex_review"],
+                "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
             },
             "max_rework_rounds": 3,
             "legacy_runs_count_toward_v04": False,
@@ -766,7 +1041,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     config_path = os_dir(root) / "project.json"
     config = read_json(config_path)
     source_version = str(config.get("agent_os_version", "0.2"))
-    if source_version not in {"0.2", "0.3", AGENT_OS_VERSION}:
+    if source_version not in {"0.2", "0.3", "0.4", AGENT_OS_VERSION}:
         raise ValueError(f"unsupported Agent OS upgrade source: {source_version}")
     backup: str | None = None
     db_path = os_dir(root) / "state.db"
@@ -807,7 +1082,11 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         director = read_json(director_policy)
         director["version"] = max(2, int(director.get("version", 1)))
         review_requires = list(director.get("review_requires", []))
-        for item in ("governance level proportional to risk", "outcome contract for L1 and L2"):
+        for item in (
+            "governance level proportional to risk",
+            "outcome contract for L1 and L2",
+            "claim-bound final-form acceptance for delivered artifacts",
+        ):
             if item not in review_requires:
                 review_requires.append(item)
         director["review_requires"] = review_requires
@@ -816,14 +1095,22 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     if not proportional_policy.exists():
         source = Path(__file__).resolve().parents[1] / "assets" / "proportional-governance.json"
         proportional_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        proportional = read_json(proportional_policy)
+        invariants = list(proportional.get("invariants", []))
+        final_form_rule = "Artifact, installable, and live delivery require exact artifact hashes plus claim-bound checks against the final form the user receives."
+        if final_form_rule not in invariants:
+            invariants.append(final_form_rule)
+        proportional["invariants"] = invariants
+        atomic_json(proportional_policy, proportional)
     evidence_policy = os_dir(root) / "policy" / "evidence-review.json"
     evidence = read_json(evidence_policy)
     evidence["agent_os_version"] = AGENT_OS_VERSION
     evidence.pop("acceptance_requires", None)
     evidence["acceptance_requires_by_level"] = {
         "L0": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "merge_gate_pass", "codex_review"],
-        "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "outcome_contract", "merge_gate_pass", "codex_review"],
-        "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
+        "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "outcome_contract", "merge_gate_pass", "codex_review"],
+        "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
     }
     evidence.pop("legacy_runs_count_toward_v02", None)
     evidence.pop("legacy_runs_count_toward_v03", None)
@@ -831,7 +1118,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     atomic_json(evidence_policy, evidence)
     config["agent_os_version"] = AGENT_OS_VERSION
     config["schema_revision"] = SCHEMA_REVISION
-    config.setdefault("default_governance_level", "L1")
+    config.setdefault("default_governance_level", "L0")
     atomic_json(config_path, config)
     adapters: list[str] = []
     shift = shift_config(root)
@@ -870,6 +1157,10 @@ def cmd_package_create(args: argparse.Namespace) -> int:
     priority = args.priority or ("P2" if level == "L0" else "")
     selected_approach = args.selected_approach or ("Make the smallest reversible change inside the declared scope" if level == "L0" else "")
     rationale = args.rationale or ("L0 work is local, reversible, mechanically verified, and has no external side effects" if level == "L0" else "")
+    delivery_target = args.delivery_target
+    if delivery_target is None:
+        delivery_target = "live" if args.live_endpoint or args.live_check else ("artifact" if args.artifact_path else "repo")
+    acceptance_checks = parse_acceptance_checks(args.acceptance_check)
     if level == "L0":
         outcome_contract = {
             "mode": "delivery", "required_post_merge": False,
@@ -911,6 +1202,14 @@ def cmd_package_create(args: argparse.Namespace) -> int:
         "recovery": {
             "external_side_effects": args.external_side_effect,
             "rollback_verification": args.rollback_check or verify,
+            "rollback_verification_explicit": bool(args.rollback_check),
+        },
+        "delivery": {
+            "target": delivery_target,
+            "artifact_paths": args.artifact_path,
+            "live_endpoints": args.live_endpoint,
+            "live_checks": args.live_check,
+            "acceptance_checks": acceptance_checks,
         },
         "outcome_contract": outcome_contract,
         "owner": {"role": "engineering-builder", "runtime": "claude-code"},
@@ -984,11 +1283,58 @@ def validate_contract(root: Path, contract: dict[str, Any]) -> list[str]:
         external = contract.get("recovery", {}).get("external_side_effects", [])
         if level == "L0" and (risk_factors or external):
             problems.append("L0 forbids declared risk factors and external side effects; use L1 or L2")
-        if external and level != "L2":
-            problems.append("external side effects require L2 governance")
         high_risk = sorted({str(value) for value in risk_factors} & L2_RISK_FACTORS)
         if high_risk and level != "L2":
             problems.append("risk factors require L2 governance: " + ", ".join(high_risk))
+        delivery = contract.get("delivery", {"target": "repo", "artifact_paths": [], "live_endpoints": [], "live_checks": [], "acceptance_checks": []})
+        target = delivery.get("target")
+        if target not in DELIVERY_TARGETS:
+            problems.append("delivery.target must be repo, artifact, installable, or live")
+        artifact_paths = delivery.get("artifact_paths", [])
+        live_endpoints = delivery.get("live_endpoints", [])
+        live_checks = delivery.get("live_checks", [])
+        if not all(isinstance(value, str) and value.strip() for value in artifact_paths):
+            problems.append("delivery.artifact_paths must contain non-empty relative paths")
+        if target in {"artifact", "installable", "live"} and not artifact_paths:
+            problems.append(f"delivery target {target} requires at least one artifact path")
+        if target == "live":
+            if not live_endpoints:
+                problems.append("live delivery requires at least one endpoint")
+            if revision < 5 and not live_checks:
+                problems.append("live delivery requires at least one executable live check")
+            if not external:
+                problems.append("live delivery requires a declared external side effect")
+            rendered_checks = "\n".join(str(value) for value in live_checks)
+            for endpoint in live_endpoints:
+                parsed = urlparse(str(endpoint))
+                if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                    problems.append(f"invalid live endpoint: {endpoint}")
+                elif revision < 5 and str(endpoint) not in rendered_checks:
+                    problems.append(f"live endpoint is not referenced by a live check: {endpoint}")
+        if revision >= 5 and target in {"artifact", "installable", "live"}:
+            acceptance_checks = delivery.get("acceptance_checks", [])
+            if not acceptance_checks:
+                problems.append(f"delivery target {target} requires at least one CLAIM::COMMAND acceptance check")
+            for index, item in enumerate(acceptance_checks, 1):
+                if not isinstance(item, dict):
+                    problems.append(f"delivery.acceptance_checks[{index}] must be an object")
+                    continue
+                claim = item.get("claim")
+                command = item.get("command")
+                if not isinstance(claim, str) or not claim.strip():
+                    problems.append(f"delivery.acceptance_checks[{index}].claim must not be empty")
+                if not isinstance(command, str) or not command.strip():
+                    problems.append(f"delivery.acceptance_checks[{index}].command must not be empty")
+            if target == "live":
+                rendered_acceptance = "\n".join(str(item.get("command", "")) for item in acceptance_checks if isinstance(item, dict))
+                for endpoint in live_endpoints:
+                    if str(endpoint) not in rendered_acceptance:
+                        problems.append(f"live endpoint is not referenced by an acceptance check: {endpoint}")
+        if external and level == "L1":
+            if target != "live":
+                problems.append("L1 external effects are allowed only for an explicit live delivery target")
+            if not contract.get("recovery", {}).get("rollback_verification_explicit"):
+                problems.append("L1 external effects require an explicit rollback check")
         if level in {"L1", "L2"}:
             context = contract.get("director_context", {})
             decision = contract.get("decision", {})
@@ -1332,6 +1678,7 @@ def cmd_claude_watch(args: argparse.Namespace) -> int:
     while True:
         name = f"agent-os-{args.run}-{current_profile}"
         activity_at: datetime | None = None
+        detail = ""
         state = read_json(routing_state_path(root, args.run)) if routing_state_path(root, args.run).is_file() else {}
         attempts = [str(item.get("profile")) for item in state.get("attempts", []) if isinstance(item, dict) and item.get("profile")]
         latest_attempt = state.get("attempts", [])[-1] if state.get("attempts") else {}
@@ -1365,6 +1712,30 @@ def cmd_claude_watch(args: argparse.Namespace) -> int:
                 )
         action = str(decision["action"])
         if action == "wait":
+            wait_status = permission_wait_status(str(decision.get("state", "")), detail)
+            if wait_status:
+                if state.get("status") != wait_status:
+                    update_routing_state(
+                        root, args.run, status=wait_status, active_profile=current_profile,
+                        waiting_for=detail, waiting_since=now_iso(),
+                    )
+                    append_event(
+                        root, args.run, "system", "routing_waiting_for_permission",
+                        "Claude is waiting for permission; the same writer is preserved and fallback is disabled",
+                        profile=current_profile, waiting_for=detail,
+                    )
+                time.sleep(poll_seconds)
+                continue
+            if state.get("status") == "WAITING_FOR_PERMISSION":
+                update_routing_state(
+                    root, args.run, status="SUPERVISING", active_profile=current_profile,
+                    waiting_for=None, permission_resumed_at=now_iso(),
+                )
+                append_event(
+                    root, args.run, "system", "routing_permission_resumed",
+                    "Permission wait ended; supervision continues with the same writer",
+                    profile=current_profile,
+                )
             inactive_seconds = (
                 max(0.0, (now() - activity_at).total_seconds())
                 if activity_at is not None else time.monotonic() - watch_started
@@ -1806,12 +2177,87 @@ def cmd_verify(args: argparse.Namespace) -> int:
         log.write_text(output + "\n", encoding="utf-8")
         result = "pass" if code == 0 else "fail"
         checks.append({"id": f"verify-{index:02d}", "type": "command", "level": "verified", "result": result, "command": command, "exit_code": code, "duration_seconds": duration_seconds, "path": str(log), "sha256": sha256(log)})
+    delivery = contract.get("delivery", {"target": "repo", "artifact_paths": [], "live_endpoints": [], "live_checks": [], "acceptance_checks": []})
+    for index, command in enumerate(delivery.get("live_checks", []), 1):
+        started = time.monotonic()
+        code, output = run([verification_shell(), "-c", str(command)], worktree, timeout=600)
+        duration_seconds = round(time.monotonic() - started, 3)
+        log = evidence / f"live-{index:02d}.log"
+        log.write_text(output + "\n", encoding="utf-8")
+        result = "pass" if code == 0 else "fail"
+        checks.append({
+            "id": f"live-{index:02d}", "type": "live", "level": "verified", "result": result,
+            "command": command, "exit_code": code, "duration_seconds": duration_seconds,
+            "path": str(log), "sha256": sha256(log),
+        })
+    delivery_artifacts: list[dict[str, Any]] = []
+    for index, declared in enumerate(delivery.get("artifact_paths", []), 1):
+        candidate = (worktree / str(declared)).resolve()
+        inside_worktree = candidate == worktree.resolve() or worktree.resolve() in candidate.parents
+        if not inside_worktree or not candidate.exists():
+            checks.append({
+                "id": f"artifact-{index:02d}", "type": "artifact", "level": "verified",
+                "result": "fail", "detail": f"missing or out-of-worktree artifact: {declared}",
+            })
+            continue
+        digest, file_count, size_bytes = path_sha256(candidate)
+        artifact = {
+            "id": f"delivery-artifact-{index:02d}", "type": "delivery_artifact",
+            "level": "verified", "result": "pass", "declared_path": str(declared),
+            "path": str(candidate), "kind": "directory" if candidate.is_dir() else "file",
+            "sha256": digest, "file_count": file_count, "size_bytes": size_bytes,
+        }
+        delivery_artifacts.append(artifact)
+        artifacts.append(artifact)
+        checks.append({
+            "id": f"artifact-{index:02d}", "type": "artifact", "level": "verified",
+            "result": "pass", "detail": str(declared), "sha256": digest,
+        })
+    acceptance_evidence: list[dict[str, Any]] = []
+    for index, item in enumerate(delivery.get("acceptance_checks", []), 1):
+        claim = str(item.get("claim", ""))
+        command = str(item.get("command", ""))
+        started = time.monotonic()
+        code, output = run([verification_shell(), "-c", command], worktree, timeout=600)
+        duration_seconds = round(time.monotonic() - started, 3)
+        log = evidence / f"acceptance-{index:02d}.log"
+        log.write_text(output + "\n", encoding="utf-8")
+        result = "pass" if code == 0 else "fail"
+        acceptance = {
+            "id": f"acceptance-{index:02d}", "type": "acceptance", "level": "verified",
+            "claim": claim, "command": command, "result": result, "exit_code": code,
+            "duration_seconds": duration_seconds, "path": str(log), "sha256": sha256(log),
+        }
+        acceptance_evidence.append(acceptance)
+        checks.append(acceptance)
+    for artifact in delivery_artifacts:
+        candidate = Path(str(artifact["path"]))
+        unchanged = candidate.exists() and path_sha256(candidate)[0] == artifact["sha256"]
+        checks.append({
+            "id": f"{artifact['id']}-unchanged-after-acceptance", "type": "artifact",
+            "level": "verified", "result": "pass" if unchanged else "fail",
+            "detail": artifact["declared_path"], "sha256": artifact["sha256"],
+        })
+    clean_after = not git(worktree, "status", "--porcelain")
+    checks.append({
+        "id": "worktree-clean-after-verification", "type": "git", "level": "verified",
+        "result": "pass" if clean_after else "fail", "detail": str(worktree),
+    })
     overall = "PASS" if all(item["result"] == "pass" for item in checks) else "FAIL"
     manifest = {
         "agent_os_version": AGENT_OS_VERSION, "run_id": args.run, "work_package": package_id,
         "baseline_commit": str(row["baseline_commit"]), "branch": branch, "branch_commit": branch_commit,
         "result": overall, "captured_at": now_iso(), "changed_paths": changed,
-        "checks": checks, "artifacts": artifacts, "unverified_claims": contract.get("success_criteria", {}).get("observed", []),
+        "checks": checks, "artifacts": artifacts,
+        "delivery": {
+            "target": delivery.get("target", "repo"),
+            "artifact_paths": delivery.get("artifact_paths", []),
+            "artifact_evidence": delivery_artifacts,
+            "live_endpoints": delivery.get("live_endpoints", []),
+            "live_check_count": len([item for item in checks if item.get("type") == "live"]),
+            "acceptance_evidence": acceptance_evidence,
+        },
+        "unverified_claims": contract.get("success_criteria", {}).get("observed", []),
     }
     manifest_path = evidence / "manifest.json"
     atomic_json(manifest_path, manifest)
@@ -1851,8 +2297,14 @@ def cmd_verifier(args: argparse.Namespace) -> int:
     for item in [*manifest.get("checks", []), *manifest.get("artifacts", [])]:
         path = item.get("path")
         expected = item.get("sha256")
-        if path and (not Path(path).is_file() or (expected and sha256(Path(path)) != expected)):
-            findings.append(f"Missing or changed evidence: {path}")
+        if path:
+            candidate = Path(path)
+            if not candidate.exists():
+                findings.append(f"Missing or changed evidence: {path}")
+            elif expected:
+                actual, _, _ = path_sha256(candidate)
+                if actual != expected:
+                    findings.append(f"Missing or changed evidence: {path}")
     result = "PASS" if not findings else "FAIL"
     report = {"run_id": args.run, "result": result, "checked_at": now_iso(), "branch_commit": current_commit, "findings": findings, "verifier": args.actor}
     report_path = os_dir(root) / "runs" / args.run / "evidence" / "verifier.json"
@@ -1892,12 +2344,71 @@ def cmd_review(args: argparse.Namespace) -> int:
             raise ValueError(output)
     gate: dict[str, Any] = {}
     maturity: dict[str, Any] = {}
+    delivery_acceptance_checks: list[dict[str, Any]] = []
     level = governance_level(contract)
     if args.decision == "ACCEPTED":
         if manifest.get("result") != "PASS" or verifier.get("result") != "PASS":
             raise ValueError("ACCEPTED requires PASS evidence and verifier")
         if manifest.get("branch_commit") != branch_commit or verifier.get("branch_commit") != branch_commit:
             raise ValueError("ACCEPTED requires exact commit match")
+        delivery = contract.get("delivery", {"target": "repo", "artifact_paths": [], "live_endpoints": [], "live_checks": [], "acceptance_checks": []})
+        manifest_delivery = manifest.get("delivery", {})
+        if delivery.get("target") in {"artifact", "installable", "live"}:
+            expected_paths = delivery.get("artifact_paths", [])
+            captured_paths = [item.get("declared_path") for item in manifest_delivery.get("artifact_evidence", [])]
+            if manifest_delivery.get("target") != delivery.get("target") or captured_paths != expected_paths:
+                raise ValueError("ACCEPTED requires hashes for the exact declared delivery artifacts")
+        if delivery.get("target") == "live":
+            if manifest_delivery.get("live_endpoints") != delivery.get("live_endpoints", []):
+                raise ValueError("ACCEPTED requires the exact declared live endpoints")
+            if manifest_delivery.get("live_check_count") != len(delivery.get("live_checks", [])):
+                raise ValueError("ACCEPTED requires every declared live check to run and pass")
+        if int(contract.get("schema_revision", 1)) >= 5 and delivery.get("target") in {"artifact", "installable", "live"}:
+            expected_acceptance = delivery.get("acceptance_checks", [])
+            captured_acceptance = manifest_delivery.get("acceptance_evidence", [])
+            expected_claims = [item.get("claim") for item in expected_acceptance]
+            captured_claims = [item.get("claim") for item in captured_acceptance]
+            if captured_claims != expected_claims or not all(item.get("result") == "pass" for item in captured_acceptance):
+                raise ValueError("ACCEPTED requires PASS evidence for every declared delivery acceptance claim")
+            for artifact in manifest_delivery.get("artifact_evidence", []):
+                candidate = Path(str(artifact.get("path", "")))
+                if not candidate.exists() or path_sha256(candidate)[0] != artifact.get("sha256"):
+                    raise ValueError("ACCEPTED requires unchanged final delivery artifacts after verification")
+            for index, item in enumerate(expected_acceptance, 1):
+                claim = str(item.get("claim", ""))
+                command = str(item.get("command", ""))
+                code, output = run([verification_shell(), "-c", str(command)], Path(str(row["worktree"])), timeout=600)
+                log = os_dir(root) / "runs" / args.run / "evidence" / f"accept-delivery-{index:02d}.log"
+                log.write_text(output + "\n", encoding="utf-8")
+                check = {
+                    "claim": claim, "command": command, "exit_code": code, "path": str(log),
+                    "sha256": sha256(log), "checked_at": now_iso(),
+                }
+                delivery_acceptance_checks.append(check)
+                if code:
+                    raise ValueError(f"ACCEPTED delivery recheck failed for claim: {claim}")
+            for artifact in manifest_delivery.get("artifact_evidence", []):
+                candidate = Path(str(artifact.get("path", "")))
+                if not candidate.exists() or path_sha256(candidate)[0] != artifact.get("sha256"):
+                    raise ValueError("ACCEPTED delivery checks changed the final artifact")
+            if git(Path(str(row["worktree"])), "status", "--porcelain"):
+                raise ValueError("ACCEPTED delivery checks must leave the worktree clean")
+        elif delivery.get("target") == "live":
+            for artifact in manifest_delivery.get("artifact_evidence", []):
+                candidate = Path(str(artifact.get("path", "")))
+                if not candidate.exists() or path_sha256(candidate)[0] != artifact.get("sha256"):
+                    raise ValueError("ACCEPTED requires unchanged final delivery artifacts after verification")
+            for index, command in enumerate(delivery.get("live_checks", []), 1):
+                code, output = run([verification_shell(), "-c", str(command)], Path(str(row["worktree"])), timeout=600)
+                log = os_dir(root) / "runs" / args.run / "evidence" / f"accept-live-{index:02d}.log"
+                log.write_text(output + "\n", encoding="utf-8")
+                check = {
+                    "claim": f"legacy live check {index}", "command": command, "exit_code": code,
+                    "path": str(log), "sha256": sha256(log), "checked_at": now_iso(),
+                }
+                delivery_acceptance_checks.append(check)
+                if code:
+                    raise ValueError(f"ACCEPTED live endpoint recheck failed: {command}")
         with db_connect(root) as db:
             unresolved = [
                 dict(item) for item in db.execute(
@@ -1944,12 +2455,19 @@ def cmd_review(args: argparse.Namespace) -> int:
         "branch_commit": branch_commit,
         "evidence_manifest_sha256": sha256(manifest_path) if manifest_path.is_file() else None,
         "verifier_result": verifier.get("result"), "maturity_result": maturity.get("result"),
+        "delivery_acceptance_checks": delivery_acceptance_checks,
+        "live_acceptance_checks": (
+            delivery_acceptance_checks
+            if contract.get("delivery", {}).get("target") == "live" else []
+        ),
         "maturity_report_sha256": sha256(artifact_path(root, args.run, "maturity-report.json")) if maturity.get("result") not in {None, "NOT_REQUIRED"} else None,
         "merge_gate_result": gate.get("result"), "reviewed_at": now_iso(),
     }
-    review_json = os_dir(root) / "reviews" / f"{args.run}-r{review_round}.json"
+    review_root = os_dir(root) / "reviews" if args.decision == "ACCEPTED" else run_dir(root, args.run) / "reviews"
+    review_root.mkdir(parents=True, exist_ok=True)
+    review_json = review_root / f"{args.run}-r{review_round}.json"
     atomic_json(review_json, review)
-    review_md = os_dir(root) / "reviews" / f"{args.run}-r{review_round}.md"
+    review_md = review_root / f"{args.run}-r{review_round}.md"
     review_md.write_text(
         f"# Review: {args.run}\n\n## Work Package\n\n{package_id}\n\n## Strategic Context\n\n"
         f"- Mission alignment: {contract.get('director_context', {}).get('mission_alignment', 'legacy package')}\n"
@@ -1961,7 +2479,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         encoding="utf-8",
     )
     control_git_code, _ = run(["git", "rev-parse", "--verify", "HEAD"], root, timeout=30)
-    if control_git_code == 0:
+    if control_git_code == 0 and args.decision == "ACCEPTED":
         expected = {str(review_json.relative_to(root)), str(review_md.relative_to(root))}
         learning_path = artifact_path(root, args.run, "learning-assessment.json")
         if learning_path.is_file():
@@ -2056,6 +2574,22 @@ def build_run_economics(root: Path, run_id: str) -> dict[str, Any]:
     routing_path = routing_state_path(root, run_id)
     routing = read_json(routing_path) if routing_path.is_file() else {}
     attempts = [item for item in routing.get("attempts", []) if isinstance(item, dict)]
+    launch_events = [
+        item for item in events
+        if item.get("event") in {"claude_started", "claude_launch_failed"}
+    ]
+    model_attempt_records = [
+        {
+            "timestamp": item.get("timestamp"),
+            "event": item.get("event"),
+            "profile": item.get("profile", "inherit"),
+            "provider": item.get("provider"),
+            "model": item.get("model"),
+            "effort": item.get("effort"),
+            "category": item.get("category"),
+        }
+        for item in launch_events
+    ]
     economics = {
         "agent_os_version": AGENT_OS_VERSION, "run_id": run_id,
         "work_package": str(row["package_id"]), "governance_level": governance_level(contract),
@@ -2073,8 +2607,12 @@ def build_run_economics(root: Path, run_id: str) -> dict[str, Any]:
             "verification_commands": len(verification_checks), "review_rounds": len(reviews),
             "rework_rounds": sum(1 for item in reviews if item.get("decision") == "CHANGES_REQUESTED"),
             "failures": len(failures), "resolved_failures": sum(1 for item in failures if item.get("status") == "RESOLVED"),
-            "model_attempts": len(attempts),
+            "model_attempts": max(len(attempts), len(launch_events)),
             "provider_fallbacks": sum(1 for item in events if item.get("event") == "routing_fallback"),
+        },
+        "model_execution": {
+            "attempts": model_attempt_records,
+            "trusted_token_usage_available": False,
         },
         "verification_command_seconds": verification_duration,
         "token_usage": {"input_tokens": None, "output_tokens": None, "source": "unavailable-from-runtime"},
@@ -2338,6 +2876,49 @@ def cmd_lock_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_runtime_recover(args: argparse.Namespace) -> int:
+    """Restore the same Run and worktree after a runtime or lock failure."""
+    root = root_path(args.project)
+    project = read_json(os_dir(root) / "project.json")
+    with db_connect(root) as db:
+        row = active_run(db, args.run)
+        if row["status"] not in {"RUNTIME_FAILED", "LOCK_EXPIRED"}:
+            raise ValueError("runtime-recover requires RUNTIME_FAILED or LOCK_EXPIRED Run")
+        if db.execute("SELECT 1 FROM locks WHERE work_unit=(SELECT work_unit FROM work_packages WHERE id=?)", (row["package_id"],)).fetchone():
+            raise ValueError("runtime-recover requires the work unit to have no active lock")
+        package = db.execute("SELECT * FROM work_packages WHERE id=?", (row["package_id"],)).fetchone()
+        if not package or package["current_run"] != args.run:
+            raise ValueError("runtime-recover requires the Package to still reference this Run")
+        worktree = Path(str(row["worktree"]))
+        if not worktree.is_dir():
+            raise ValueError(f"runtime-recover worktree is missing: {worktree}")
+        if git(worktree, "branch", "--show-current") != row["branch"]:
+            raise ValueError("runtime-recover worktree branch differs from the recorded Run branch")
+        contract = load_package(root, str(row["package_id"]))
+        unit_id = str(contract["work_unit"])
+        timestamp = now_iso()
+        ttl = int(project.get("lock_ttl_seconds", DEFAULT_LOCK_SECONDS))
+        expires = (now() + timedelta(seconds=ttl)).isoformat(timespec="seconds")
+        db.execute("INSERT INTO locks VALUES(?,?,?,?,?,?,?)", (unit_id, args.run, row["owner"], str(worktree), timestamp, timestamp, expires))
+        db.execute("UPDATE runs SET status='BUILDING', heartbeat_at=?, ended_at=NULL WHERE id=?", (timestamp, args.run))
+        db.execute("UPDATE work_packages SET status='BUILDING', updated_at=? WHERE id=?", (timestamp, row["package_id"]))
+    previous_routing = read_json(routing_state_path(root, args.run)) if routing_state_path(root, args.run).is_file() else {}
+    update_routing_state(
+        root, args.run, status="RUNTIME_RECOVERY_READY", mode=previous_routing.get("mode", "builder"),
+        active_profile=None, next_profile=None, attempts=[], recovered_at=timestamp,
+        recovery_reason=args.reason, previous_terminal_status=row["status"],
+        previous_attempts=previous_routing.get("attempts", []),
+    )
+    dirty = bool(git(worktree, "status", "--porcelain"))
+    append_event(root, args.run, "codex", "runtime_recovered", args.reason, previous_status=row["status"], dirty=dirty)
+    print(json.dumps({
+        "run": args.run, "package": row["package_id"], "status": "BUILDING",
+        "worktree": str(worktree), "branch": row["branch"], "dirty": dirty,
+        "lock_expires_at": expires,
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_recover(args: argparse.Namespace) -> int:
     root = root_path(args.project)
     findings: list[dict[str, Any]] = []
@@ -2400,9 +2981,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     try:
         with db_connect(root) as db:
             run_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(runs)").fetchall()}
-            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.4 Run database schema"))
+            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.5 Run database schema"))
             tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.4 failure, learning, and outcome tables"))
+            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.5 failure, learning, and outcome tables"))
             for package in db.execute("SELECT * FROM work_packages").fetchall():
                 problems = validate_contract(root, load_package(root, package["id"]))
                 checks.append(("PASS" if not problems else "FAIL", f"package {package['id']}: {problems or package['status']}"))
@@ -2444,6 +3025,15 @@ def extract_tool_path(payload: dict[str, Any]) -> str | None:
     return None
 
 
+def command_references_governance(command: str, worktree: Path) -> bool:
+    normalized = command.strip().lower()
+    worktree_variants = {str(worktree).lower(), str(worktree.resolve()).lower()}
+    for worktree_text in sorted(worktree_variants, key=len, reverse=True):
+        normalized = normalized.replace(shlex.quote(worktree_text), "<worktree>").replace(worktree_text, "<worktree>")
+    governance = (".agent-os", ".agent-shift", ".githooks", "agents.md", "claude.md", ".claude/settings")
+    return any(fragment in normalized for fragment in governance)
+
+
 def cmd_hook(args: argparse.Namespace) -> int:
     payload = json.load(sys.stdin)
     cwd = Path(str(payload.get("cwd") or os.getcwd())).resolve()
@@ -2461,7 +3051,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
             read_only_prefixes = (
                 "pwd", "ls", "find ", "rg ", "grep ", "sed -n", "cat ", "head ", "tail ", "wc ",
                 "git status", "git diff", "git log", "git show", "git rev-parse", "git branch --show-current",
-                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os recover",
+                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os context-doctor", "agent-os recover",
                 "agent-os claude-status", "agent-shift status", "agent-shift doctor",
             )
             if not lock:
@@ -2493,9 +3083,8 @@ def cmd_hook(args: argparse.Namespace) -> int:
                 if any(fragment in command for fragment in HIGH_RISK_FRAGMENTS):
                     print("Agent OS blocked: high-risk command requires Codex/user decision", file=sys.stderr)
                     return 2
-                governance = (".agent-os", ".agent-shift", ".githooks", "agents.md", "claude.md", ".claude/settings")
                 safe_control = command.strip().startswith(("agent-os verify", "agent-os heartbeat", "agent-os status", "agent-os claude-status", "agent-shift log"))
-                if any(fragment in command for fragment in governance) and not safe_control:
+                if command_references_governance(command, Path(str(lock["worktree"]))) and not safe_control:
                     print("Agent OS blocked: governance mutation is director-owned", file=sys.stderr)
                     return 2
         run_id = str(lock["run_id"]) if lock else None
@@ -2512,7 +3101,7 @@ def parser() -> argparse.ArgumentParser:
     sub = result.add_subparsers(dest="command", required=True)
     init = sub.add_parser("init"); init.add_argument("project"); init.add_argument("--id", required=True); init.add_argument("--name", required=True); init.add_argument("--mission", required=True); init.set_defaults(func=cmd_init)
     upgrade = sub.add_parser("upgrade"); upgrade.add_argument("project"); upgrade.set_defaults(func=cmd_upgrade)
-    package = sub.add_parser("package-create"); package.add_argument("project"); package.add_argument("--id", required=True); package.add_argument("--work-unit", required=True); package.add_argument("--governance-level", choices=sorted(GOVERNANCE_LEVELS), default="L1"); package.add_argument("--risk-factor", action="append", default=[]); package.add_argument("--goal", required=True); package.add_argument("--objective"); package.add_argument("--mission-alignment"); package.add_argument("--priority", choices=("P0", "P1", "P2", "P3")); package.add_argument("--expected-gain", required=True); package.add_argument("--external-signal", action="append", default=[]); package.add_argument("--frontline-signal", action="append", default=[]); package.add_argument("--first-principles", action="append", default=[]); package.add_argument("--selected-approach"); package.add_argument("--rationale"); package.add_argument("--alternative", action="append", default=[]); package.add_argument("--tradeoff", action="append", default=[]); package.add_argument("--external-side-effect", action="append", default=[]); package.add_argument("--rollback-check", action="append", default=[]); package.add_argument("--outcome-metric"); package.add_argument("--outcome-baseline"); package.add_argument("--outcome-target"); package.add_argument("--outcome-validation-window"); package.add_argument("--outcome-evidence-source"); package.add_argument("--allow", nargs="*", default=[]); package.add_argument("--deny", nargs="*", default=[]); package.add_argument("--verify", nargs="*", default=[]); package.add_argument("--verified", action="append", default=[]); package.add_argument("--reviewed", action="append", default=[]); package.add_argument("--observed", action="append", default=[]); package.add_argument("--assumption", action="append", default=[]); package.add_argument("--constraint", action="append", default=[]); package.add_argument("--stop", action="append", default=["scope expansion", "credential or irreversible action", "three failed rework rounds"]); package.add_argument("--max-runs", type=int, default=4); package.add_argument("--max-rework", type=int, default=3); package.set_defaults(func=cmd_package_create)
+    package = sub.add_parser("package-create"); package.add_argument("project"); package.add_argument("--id", required=True); package.add_argument("--work-unit", required=True); package.add_argument("--governance-level", choices=sorted(GOVERNANCE_LEVELS), default="L0"); package.add_argument("--risk-factor", action="append", default=[]); package.add_argument("--goal", required=True); package.add_argument("--objective"); package.add_argument("--mission-alignment"); package.add_argument("--priority", choices=("P0", "P1", "P2", "P3")); package.add_argument("--expected-gain", required=True); package.add_argument("--external-signal", action="append", default=[]); package.add_argument("--frontline-signal", action="append", default=[]); package.add_argument("--first-principles", action="append", default=[]); package.add_argument("--selected-approach"); package.add_argument("--rationale"); package.add_argument("--alternative", action="append", default=[]); package.add_argument("--tradeoff", action="append", default=[]); package.add_argument("--external-side-effect", action="append", default=[]); package.add_argument("--rollback-check", action="append", default=[]); package.add_argument("--delivery-target", choices=sorted(DELIVERY_TARGETS)); package.add_argument("--artifact-path", action="append", default=[]); package.add_argument("--live-endpoint", action="append", default=[]); package.add_argument("--live-check", action="append", default=[]); package.add_argument("--acceptance-check", action="append", default=[]); package.add_argument("--outcome-metric"); package.add_argument("--outcome-baseline"); package.add_argument("--outcome-target"); package.add_argument("--outcome-validation-window"); package.add_argument("--outcome-evidence-source"); package.add_argument("--allow", nargs="*", default=[]); package.add_argument("--deny", nargs="*", default=[]); package.add_argument("--verify", nargs="*", default=[]); package.add_argument("--verified", action="append", default=[]); package.add_argument("--reviewed", action="append", default=[]); package.add_argument("--observed", action="append", default=[]); package.add_argument("--assumption", action="append", default=[]); package.add_argument("--constraint", action="append", default=[]); package.add_argument("--stop", action="append", default=["scope expansion", "credential or irreversible action", "three failed rework rounds"]); package.add_argument("--max-runs", type=int, default=4); package.add_argument("--max-rework", type=int, default=3); package.set_defaults(func=cmd_package_create)
     challenge = sub.add_parser("director-challenge"); challenge.add_argument("project"); challenge.add_argument("--package", required=True); challenge.add_argument("--reviewer", required=True); challenge.add_argument("--decision", choices=("PASS", "CHANGES_REQUESTED"), required=True); challenge.add_argument("--summary", required=True); challenge.add_argument("--finding", action="append", default=[]); challenge.add_argument("--review-file", required=True); challenge.set_defaults(func=cmd_challenge_record)
     ready = sub.add_parser("package-ready"); ready.add_argument("project"); ready.add_argument("--id", required=True); ready.set_defaults(func=cmd_package_ready)
     start = sub.add_parser("run-start"); start.add_argument("project"); start.add_argument("--package", required=True); start.add_argument("--run", required=True); start.add_argument("--agent", choices=("claude", "claude-subagent", "codex-subagent"), default="claude"); start.set_defaults(func=cmd_run_start)
@@ -2535,9 +3124,22 @@ def parser() -> argparse.ArgumentParser:
     economics = sub.add_parser("economics"); economics.add_argument("project"); economics.add_argument("--run", required=True); economics.set_defaults(func=cmd_economics)
     rollback = sub.add_parser("rollback"); rollback.add_argument("project"); rollback.add_argument("--run", required=True); rollback.add_argument("--reason", required=True); rollback.add_argument("--execute", action="store_true"); rollback.add_argument("--ack-external", action="store_true"); rollback.set_defaults(func=cmd_rollback)
     release = sub.add_parser("lock-release"); release.add_argument("project"); release.add_argument("--work-unit", required=True); release.add_argument("--reason", required=True); release.set_defaults(func=cmd_lock_release)
+    runtime_recover = sub.add_parser("runtime-recover"); runtime_recover.add_argument("project"); runtime_recover.add_argument("--run", required=True); runtime_recover.add_argument("--reason", required=True); runtime_recover.set_defaults(func=cmd_runtime_recover)
     recover = sub.add_parser("recover"); recover.add_argument("project"); recover.set_defaults(func=cmd_recover)
     status = sub.add_parser("status"); status.add_argument("project"); status.set_defaults(func=cmd_status)
     doctor = sub.add_parser("doctor"); doctor.add_argument("project"); doctor.add_argument("--strict", action="store_true"); doctor.add_argument("--verbose", action="store_true"); doctor.set_defaults(func=cmd_doctor)
+    context_doctor = sub.add_parser("context-doctor", help="audit always-loaded context without mutating it")
+    context_doctor.add_argument("project")
+    context_doctor.add_argument("--include-global", action="store_true")
+    context_doctor.add_argument("--global-agents")
+    context_doctor.add_argument("--skill", action="append", default=[])
+    context_doctor.add_argument("--max-global-lines", type=int, default=CONTEXT_LINE_BUDGETS["global_agents"])
+    context_doctor.add_argument("--max-project-lines", type=int, default=CONTEXT_LINE_BUDGETS["project_agents"])
+    context_doctor.add_argument("--max-claude-lines", type=int, default=CONTEXT_LINE_BUDGETS["claude"])
+    context_doctor.add_argument("--max-skill-lines", type=int, default=CONTEXT_LINE_BUDGETS["skill"])
+    context_doctor.add_argument("--strict", action="store_true")
+    context_doctor.add_argument("--json", action="store_true")
+    context_doctor.set_defaults(func=cmd_context_doctor)
     hook = sub.add_parser("hook"); hook.add_argument("phase", choices=("pre", "post", "failure", "stop")); hook.set_defaults(func=cmd_hook)
     return result
 

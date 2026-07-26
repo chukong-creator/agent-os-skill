@@ -54,6 +54,8 @@ REQUIRED_SHIFT_FILES = (
     "RETURN.md",
     "ACTIVITY.jsonl",
 )
+TERMINAL_STATUSES = {"ACCEPTED", "ROLLED_BACK", "CODE_REVERTED_EXTERNAL_PENDING", "ROLLBACK_FAILED"}
+WORK_QUEUE_MARKER = "agent-shift-work-queue"
 
 
 def now_iso() -> str:
@@ -73,6 +75,18 @@ def atomic_json_write(path: Path, value: dict[str, Any]) -> None:
             os.unlink(temp_name)
 
 
+def atomic_text_write(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(value)
+        os.replace(temp_name, path)
+    finally:
+        if os.path.exists(temp_name):
+            os.unlink(temp_name)
+
+
 def load_json(path: Path) -> dict[str, Any]:
     with path.open(encoding="utf-8") as handle:
         value = json.load(handle)
@@ -86,6 +100,88 @@ def find_work_unit(config: dict[str, Any], unit_id: str) -> dict[str, Any]:
         if isinstance(unit, dict) and unit.get("id") == unit_id:
             return unit
     raise ValueError(f"unknown work unit: {unit_id}")
+
+
+def work_queue_metadata(state: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "handoff_id": state.get("handoff_id"),
+        "status": state.get("status"),
+        "active_work_package": state.get("active_work_package"),
+        "updated_at": state.get("updated_at"),
+    }
+
+
+def render_work_queue(state: dict[str, Any]) -> str:
+    metadata = json.dumps(work_queue_metadata(state), ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    status = str(state.get("status") or "UNKNOWN")
+    package = state.get("active_work_package")
+    active = bool(package) and status not in TERMINAL_STATUSES
+    lines = [
+        "# Work queue",
+        "",
+        f"<!-- {WORK_QUEUE_MARKER} {metadata} -->",
+        "",
+        "> Generated from `.agent-shift/state.json`. Do not edit manually.",
+        "",
+        "## Active package",
+        "",
+    ]
+    if active:
+        lines.extend(
+            [
+                f"- Status: `{status}`",
+                f"- Owner: `{state.get('owner') or 'unassigned'}`",
+                f"- Work unit: `{state.get('active_work_unit') or 'unassigned'}`",
+                f"- Package: `{package}`",
+                f"- Run: `{state.get('handoff_id') or 'unassigned'}`",
+                f"- Branch: `{state.get('agent_branch') or 'not created'}`",
+                f"- Worktree: `{state.get('worktree_path') or 'not created'}`",
+            ]
+        )
+    else:
+        lines.append(f"None. Current state is `{status}`.")
+    lines.extend(
+        [
+            "",
+            "## Most recent delivery",
+            "",
+            f"- Package: `{package or 'none'}`",
+            f"- Run: `{state.get('handoff_id') or 'none'}`",
+            f"- Merge commit: `{state.get('merge_commit') or 'none'}`",
+            f"- Updated: `{state.get('updated_at') or 'unknown'}`",
+            "",
+            "## Pre-authorized next packages",
+            "",
+            "None. A new package must be explicitly scoped before implementation starts.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def read_work_queue_metadata(path: Path) -> dict[str, Any] | None:
+    if not path.is_file():
+        return None
+    prefix = f"<!-- {WORK_QUEUE_MARKER} "
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith(prefix) and line.endswith(" -->"):
+            value = json.loads(line[len(prefix) : -4])
+            if not isinstance(value, dict):
+                raise ValueError("WORK_QUEUE marker must contain a JSON object")
+            return value
+    return None
+
+
+def sync_work_queue(root: Path, state: dict[str, Any]) -> Path:
+    path = root / ".agent-shift" / "WORK_QUEUE.md"
+    atomic_text_write(path, render_work_queue(state))
+    return path
+
+
+def write_state_and_sync(root: Path, state: dict[str, Any]) -> None:
+    atomic_json_write(root / ".agent-shift" / "state.json", state)
+    sync_work_queue(root, state)
 
 
 def git_output(repo: Path, *args: str, timeout: int = 60) -> str:
@@ -231,6 +327,8 @@ def cmd_init(args: argparse.Namespace) -> int:
         if copy_template_if_missing(source, destination, args.name):
             created.append(str(destination.relative_to(root)))
 
+    sync_work_queue(root, load_json(state_path))
+
     activity = shift / "ACTIVITY.jsonl"
     if not activity.exists():
         activity.touch()
@@ -308,6 +406,16 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         checks.append(("PASS" if STATUS_OWNER.get(status) == owner else "FAIL", f"state owner: {owner}"))
     except (OSError, ValueError, json.JSONDecodeError) as error:
         checks.append(("FAIL", f"invalid state.json: {error}"))
+    if state:
+        try:
+            queue_metadata = read_work_queue_metadata(shift / "WORK_QUEUE.md")
+            if queue_metadata is None:
+                checks.append(("FAIL", "WORK_QUEUE.md is a legacy/manual view; run `agent-shift sync-views`"))
+            else:
+                queue_matches = queue_metadata == work_queue_metadata(state)
+                checks.append(("PASS" if queue_matches else "FAIL", "WORK_QUEUE.md matches state.json"))
+        except (OSError, ValueError, json.JSONDecodeError) as error:
+            checks.append(("FAIL", f"invalid WORK_QUEUE.md marker: {error}"))
     try:
         baselines = load_json(shift / "baselines.json")
         checks.append(("PASS" if baselines.get("protocol_version") == PROTOCOL_VERSION else "FAIL", "baseline protocol version"))
@@ -342,8 +450,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     if baseline and git_code == 0:
                         baseline_commit = str(baseline.get("commit", ""))
                         commit_code, _ = run_command(f"git cat-file -e {baseline_commit}^{{commit}}", unit_root, timeout=10)
-                        baseline_ok = commit_code == 0 and baseline_commit == git_head.strip()
-                        checks.append(("PASS" if baseline_ok else "FAIL", f"work unit {unit['id']} recorded baseline equals current HEAD"))
+                        terminal = bool(state and state.get("status") in TERMINAL_STATUSES)
+                        if terminal and commit_code == 0:
+                            ancestor_code, _ = run_command(
+                                f"git merge-base --is-ancestor {baseline_commit} HEAD", unit_root, timeout=10
+                            )
+                            baseline_ok = ancestor_code == 0
+                            message = f"work unit {unit['id']} completed baseline is an ancestor of current HEAD"
+                        else:
+                            baseline_ok = commit_code == 0 and baseline_commit == git_head.strip()
+                            message = f"work unit {unit['id']} active baseline equals current HEAD"
+                        checks.append(("PASS" if baseline_ok else "FAIL", message))
                     else:
                         checks.append(("FAIL" if git_required else "WARN", f"work unit {unit['id']} baseline record missing"))
                     clean_code, clean_output = run_command("git status --porcelain", unit_root, timeout=10)
@@ -390,6 +507,15 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sync_views(args: argparse.Namespace) -> int:
+    root = project_root(args.project)
+    state = load_json(root / ".agent-shift" / "state.json")
+    path = sync_work_queue(root, state)
+    append_activity(root, "system", "views_synced", "Regenerated WORK_QUEUE.md from state.json")
+    print(str(path))
+    return 0
+
+
 def cmd_transition(args: argparse.Namespace) -> int:
     root = project_root(args.project)
     state_path = root / ".agent-shift" / "state.json"
@@ -430,7 +556,7 @@ def cmd_transition(args: argparse.Namespace) -> int:
         state["active_work_package"] = args.work_package
     if target == "CHANGES_REQUESTED":
         state["review_round"] = int(state.get("review_round", 0)) + 1
-    atomic_json_write(state_path, state)
+    write_state_and_sync(root, state)
     append_activity(root, args.actor, "transition", f"{current} -> {target}", handoff_id=handoff_id, note=args.note)
     print(json.dumps(state, ensure_ascii=False, indent=2))
     return 0
@@ -525,7 +651,7 @@ def cmd_worktree_create(args: argparse.Namespace) -> int:
             "note": f"Worktree prepared for {args.agent}.",
         }
     )
-    atomic_json_write(state_path, state)
+    write_state_and_sync(root, state)
     append_activity(root, "codex", "worktree_created", f"Created {branch}", work_unit=args.work_unit, worktree=str(worktree))
     print(json.dumps({"work_unit": args.work_unit, "branch": branch, "worktree": str(worktree), "baseline_commit": state["baseline_commit"]}, ensure_ascii=False, indent=2))
     return 0
@@ -622,7 +748,7 @@ def cmd_merge(args: argparse.Namespace) -> int:
             os.environ["AGENT_SHIFT_ALLOW_MAIN_COMMIT"] = previous_allow
     merge_commit = git_output(repo, "rev-parse", "HEAD")
     state.update({"merge_commit": merge_commit, "updated_at": now_iso(), "note": f"Merged {branch} into {base_branch}."})
-    atomic_json_write(state_path, state)
+    write_state_and_sync(root, state)
     append_activity(root, "codex", "merged", f"Merged {branch}", work_unit=args.work_unit, merge_commit=merge_commit)
     print(json.dumps({"branch": branch, "base_branch": base_branch, "merge_commit": merge_commit}, ensure_ascii=False, indent=2))
     return 0
@@ -641,7 +767,7 @@ def cmd_rollback_record(args: argparse.Namespace) -> int:
         "rollback_commit": args.rollback_commit, "updated_at": now_iso(),
         "note": args.note,
     })
-    atomic_json_write(state_path, state)
+    write_state_and_sync(root, state)
     append_activity(root, "codex", "rolled_back", args.note, merge_commit=args.merge_commit, rollback_commit=args.rollback_commit)
     print(json.dumps(state, ensure_ascii=False, indent=2))
     return 0
@@ -669,7 +795,7 @@ def cmd_worktree_remove(args: argparse.Namespace) -> int:
     atomic_json_write(registry_path, registry)
     if state.get("agent_branch") == branch:
         state.update({"worktree_path": None, "updated_at": now_iso(), "note": "Agent worktree removed."})
-    atomic_json_write(state_path, state)
+    write_state_and_sync(root, state)
     append_activity(root, "codex", "worktree_removed", f"Removed {worktree}", work_unit=args.work_unit)
     print(str(worktree))
     return 0
@@ -715,6 +841,10 @@ def build_parser() -> argparse.ArgumentParser:
     status.add_argument("project")
     status.add_argument("--json", action="store_true")
     status.set_defaults(func=cmd_status)
+
+    sync_views = sub.add_parser("sync-views", help="regenerate derived runtime views from state.json")
+    sync_views.add_argument("project")
+    sync_views.set_defaults(func=cmd_sync_views)
 
     transition = sub.add_parser("transition", help="perform a validated state transition")
     transition.add_argument("project")

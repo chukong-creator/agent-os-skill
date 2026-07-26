@@ -44,7 +44,7 @@
 - Register every worktree in runtime `worktrees.json`. Keep `state.json` pointed at the primary delivery branch while retaining additional bounded subagent branches in the registry.
 - Merge or cherry-pick reviewed subagent commits into the primary Agent branch first. Subagent branches never merge directly to protected `main`; the final primary branch passes one aggregate merge gate.
 - Bind every package to exactly one `repo_root`, baseline commit, Agent branch, worktree, path allowlist, and verification set.
-- Keep runtime state and logs outside tracked Agent branches. Track stable protocol and product truth; ignore live state, activity, worktrees, and gate output.
+- Keep runtime state and logs outside tracked Agent branches. Track stable protocol and product truth; ignore live state, activity, worktrees, and gate output. Treat `state.json` as canonical and `WORK_QUEUE.md` as an automatically generated human-readable view.
 - Require the merge gate to prove: branch has commits, diff has no whitespace errors, merge is conflict-free, changed paths stay in the allowlist, worktree is clean, and declared checks pass.
 - Require independent Codex review after the mechanical gate. A passing build is not product acceptance.
 - Permit only Codex main agent to set `ACCEPTED` and merge the exact gated commit. If either the Agent branch or protected base moves afterward, invalidate the gate.
@@ -55,7 +55,7 @@
 
 | State | Owner | Required artifact |
 | --- | --- | --- |
-| `SCOPED` | Codex | handoff, queue, acceptance criteria |
+| `SCOPED` | Codex | handoff, generated queue, acceptance criteria |
 | `CLAUDE_IMPLEMENTING` | Claude | activity and implementation evidence |
 | `READY_FOR_REVIEW` | Codex | return report and verification results |
 | `CODEX_REVIEWING` | Codex | independent review evidence |

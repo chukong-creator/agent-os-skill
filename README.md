@@ -5,14 +5,16 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.4 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
+  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.5 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
 </p>
 
 <p align="center">
   <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
 </p>
 
-Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 AI 原生软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与有限模型兜底**，把多个 Agent 从共用编辑器的临时协作，升级为责任清晰的软件组织。
+Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用的 AI 软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与可选的有限模型兜底**，处理真正需要跨 Agent 交接、隔离、恢复、独立验收或外部发布的工作。
+
+> 本地、可逆、一个 Agent 能在当前任务完成并验证的改动，默认直接做，不启动 Agent OS。治理成本必须小于它降低的交付风险。
 
 > **Codex** 是产品与技术总监：定义目标、边界、验收标准并作最终决策。
 >
@@ -20,7 +22,7 @@ Agent OS 不是“让 Claude 帮 Codex 写代码”的提示词，而是一套 A
 >
 > **Git** 是版本神经系统；**Evidence** 是组织记忆；**Agent OS** 是治理与恢复层。
 
-当前版本：**Agent OS v0.4 + Agent Shift protocol v2**。
+当前版本：**Agent OS v0.5 + Agent Shift protocol v2**。
 
 ## 30 秒看懂
 
@@ -77,16 +79,30 @@ flowchart TD
 | **收益闭环** | L1/L2 冻结指标、基线、目标、验证窗口和证据源，合并后回访 | 区分“代码交付”与“预期收益真的发生” |
 | **治理记账** | 自动计算时长、证据等待、验证耗时、重试与 fallback；未知 token 保持空值 | 治理系统也必须证明自己没有无限膨胀 |
 | **恢复与学习** | 精确 revert；L2 使用 Director Challenge、maturity report 与 improvement proposal | 高风险失败可恢复，下一次有依据地变好 |
+| **Context Diet** | `context-doctor` 盘点常驻上下文、重复指令、预算和断裂引用 | Agent 看到恰好够用的约束，不被历史提示词拖慢 |
+
+### Context Diet：规则少一点，边界硬一点
+
+v0.5 将 Agent OS 主 Skill 从操作手册改成路由器：权限、密钥、决策权、精确 Commit、验收与回滚等不可推导边界始终加载；具体流程、示例、Rubric 和领域知识放入 references，只有相关任务才读取。
+
+```bash
+agent-os context-doctor . --include-global \
+  --skill /Users/fanchao/.codex/skills/agent-os/SKILL.md --strict
+```
+
+检查只读且不会自动删文件。断裂引用直接失败；重复规则和上下文预算超限给出警告，并在 `--strict` 下成为门禁。它不会假装能机械判断所有语义冲突：删规则前仍要确认模型能否从现场推导，以及猜错后是否一定会被测试或审查发现。
 
 ### 三种治理通道
 
 | 等级 | 何时使用 | 额外要求 | 合并后 |
 |---|---|---|---|
 | **L0** | 小、局部、可逆、无外部副作用 | 精简上下文；仍保留单写者、权限、Evidence、Verifier、Review、Merge Gate | `MERGED` |
-| **L1** | 普通产品或代码交付，需要验证真实收益 | 开工前冻结 Outcome Contract | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
-| **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或外部副作用 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L1** | 普通产品或代码交付；可逆且经用户授权的发布 | 开工前冻结 Outcome Contract；交付还要绑定最终制品哈希、声明与验收命令，线上发布另需真实端点与回滚验证 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
+| **L2** | 生产、隐私、凭据、数据库迁移、删除、付款、不可逆或其他重大外部影响 | 完整决策上下文、独立 Director Challenge、学习与五问成熟度 | `OUTCOME_PENDING`，随后确认 / 反驳 / 暂不确定 |
 
-高风险因子和外部副作用会机械强制 `L2`。优先级高不等于风险低；再紧急也不能降低治理等级。
+生产、隐私、凭据、迁移、删除、付款和不可逆风险会机械强制 `L2`。可逆发布可使用 `L1`，但缺少最终制品哈希或最终形态验收时不能 `ACCEPTED`。优先级高不等于风险低；再紧急也不能降低治理等级。
+
+交付形态不是只有网页发布：`repo` 表示源码提交，`artifact` 表示文档/媒体/归档等导出物，`installable` 表示 iOS、macOS、桌面或移动安装包，`live` 表示托管网页或服务。后三类必须用 `--acceptance-check "声明::命令"` 直接检查用户收到的最终形态。构建通过不能代替安装启动，HTTP 200 不能代替页面交互。
 
 ### 一个交付怎样流动
 
@@ -126,7 +142,7 @@ stateDiagram-v2
 - **模型额度或 Provider 不稳定**：可配置角色路由和有限 fallback，失败显式终止。
 - **高风险、长期演进的产品**：权限、失败位置、回滚与学习都有可审计记录。
 
-一次性低风险修改可以走 L0；确实不需要跨 Agent、审计或恢复时，直接使用一个 Agent 仍然更轻。Agent OS 的价值出现在**任务跨轮次、跨模型、需要验收或必须恢复**的时候。
+确实不需要跨 Agent、隔离、审计、恢复或外部发布时，直接使用一个 Agent。只有仍需治理但风险较低的跨轮次工作才走 L0。Agent OS 的价值出现在**任务跨轮次、跨模型、需要独立验收、外部发布或必须恢复**的时候。
 
 ## 快速开始
 
@@ -175,7 +191,7 @@ git status --short
 agent-shift init . --name "My Project"
 ```
 
-把 [`examples/project.gitignore`](examples/project.gitignore) 合并进项目 `.gitignore`。保留项目已有的 `AGENTS.md`；没有时可从 [`examples/AGENTS.md.template`](examples/AGENTS.md.template) 起步：
+把 [`examples/project.gitignore`](examples/project.gitignore) 合并进项目 `.gitignore`。保留项目已有的 `AGENTS.md`；没有时可从 [`examples/AGENTS.md.template`](examples/AGENTS.md.template) 起步。全局 Codex 指令可参考 [`examples/CODEX.global.AGENTS.md.template`](examples/CODEX.global.AGENTS.md.template)，但只放跨项目且不可推导的边界：
 
 ```bash
 test -f AGENTS.md || \
@@ -336,6 +352,8 @@ tail -f .agent-os/runs/run-wp-001-r1/events.jsonl
 cat .agent-os/runs/run-wp-001-r1/routing-state.json
 ```
 
+权限或登录确认会显示为 `WAITING_FOR_PERMISSION`，保留同一个 Writer，也不会触发模型切换。`agent-os economics` 会按实际启动事件列出可观察到的 profile/provider/model；运行时没有可信 token 数据时仍明确保持 `null`，不会伪造估算。
+
 ```mermaid
 sequenceDiagram
     participant C as Codex Director
@@ -370,7 +388,7 @@ sequenceDiagram
 
 ## CC Switch 模型路由与额度兜底
 
-模型路由是可选能力。Agent OS 只读 CC Switch 的 Claude Provider 配置，把选中的环境变量注入**当前 Claude 子进程**；不会改变 CC Switch 的全局当前 Provider，也不会把 API Key 写入命令、日志或 Evidence。
+模型路由是显式启用的可选能力。仅仅存在配置文件不会选择 Provider 或消耗额度；必须在启动时明确传入 `--profile` 或 `--routing-config`。Agent OS 只读 CC Switch 的 Claude Provider 配置，把选中的环境变量注入**当前 Claude 子进程**；不会改变 CC Switch 的全局当前 Provider，也不会把 API Key 写入命令、日志或 Evidence。
 
 ```bash
 mkdir -p "$HOME/.config/agent-os"
@@ -444,6 +462,12 @@ agent-os rollback . --run run-wp-001-r1 --reason "..." --execute
 agent-os recover .
 ```
 
+如果 Run 因运行时误判或锁释放而中断，确认原因后原地恢复，不复制 Work Package 或上下文：
+
+```bash
+agent-os runtime-recover . --run run-wp-001-r1 --reason "已确认可安全继续同一工作树"
+```
+
 ## 仓库结构
 
 ```text
@@ -471,7 +495,7 @@ git pull --ff-only
 agent-os upgrade /path/to/project
 ```
 
-安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 项目迁移到 v0.4，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
+安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 / v0.4 项目迁移到 v0.5，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
 
 安全卸载：
 
@@ -485,7 +509,9 @@ cd agent-os-skill
 开发验证：
 
 ```bash
+python3 skills/agent-shift/scripts/test_agent_shift_views.py
 python3 skills/agent-os/scripts/test_agent_os_routing.py
+python3 skills/agent-os/scripts/test_agent_os_v05.py
 python3 skills/agent-os/scripts/test_agent_os_v04.py
 python3 skills/agent-os/scripts/test_agent_os_v03.py
 ```
@@ -496,7 +522,7 @@ python3 skills/agent-os/scripts/test_agent_os_v03.py
 
 ## English overview
 
-**Agent OS v0.4 turns Codex, Claude Code, and Git into an observable, proportionally governed, outcome-aware, and recoverable AI software team.**
+**Agent OS v0.5 turns Codex, Claude Code, and Git into an observable, context-efficient, proportionally governed, outcome-aware, and recoverable AI software team.**
 
 - **Codex Director** owns mission alignment, scope, acceptance criteria, findings, merge authority, and final delivery decisions.
 - **Claude Builder** owns implementation and ordinary rework inside an isolated Git worktree.

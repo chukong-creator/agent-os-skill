@@ -79,11 +79,11 @@ agent-shift merge <project-root> --work-unit <id>
 agent-shift worktree-remove <project-root> --work-unit <id>
 ```
 
-The merge command rejects both Agent-branch drift and base-branch drift after the final gate. Agent OS v0.3 owns rollback validation and execution; after a verified revert it uses `rollback-record` to synchronize Agent Shift to `ROLLED_BACK`. Do not call that mechanical command as a substitute for Agent OS rollback gates.
+The merge command rejects both Agent-branch drift and base-branch drift after the final gate. Agent OS owns rollback validation and execution; after a verified revert it uses `rollback-record` to synchronize Agent Shift to `ROLLED_BACK`. Do not call that mechanical command as a substitute for Agent OS rollback gates.
 
 ## Run the delivery loop
 
-1. Codex writes `HANDOFF.md` and `WORK_QUEUE.md`, records the baseline, creates the Agent worktree, then transitions to `CLAUDE_IMPLEMENTING`.
+1. Codex writes `HANDOFF.md`, scopes the package, records the baseline, creates the Agent worktree, then transitions to `CLAUDE_IMPLEMENTING`. Agent Shift generates `WORK_QUEUE.md` from `state.json` on every state change; do not edit it manually.
 2. Claude implements one authorized package, logs material actions, writes `RETURN.md`, and transitions to `READY_FOR_REVIEW`.
 3. Codex or a Codex QA subagent verifies the Agent branch diff, path allowlist, merge conflicts, build, tests, render, and project-specific gates.
 4. Codex transitions to:
@@ -96,9 +96,12 @@ Use the CLI for auditable transitions and logs:
 
 ```bash
 agent-shift status <project-root>
+agent-shift sync-views <project-root>
 agent-shift transition <project-root> CLAUDE_IMPLEMENTING --handoff-id H-001 --note "Package ready"
 agent-shift log <project-root> --actor claude --event build --summary "npm run build passed"
 ```
+
+`doctor` fails when the generated queue no longer matches runtime state. Use `sync-views` once when upgrading a project that still has a legacy manual queue.
 
 ## Handoff around Codex limits
 

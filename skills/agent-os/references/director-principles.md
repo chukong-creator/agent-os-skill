@@ -11,11 +11,13 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Rank work explicitly. Prefer one high-leverage package over many plausible activities.
 - Reject packages that cannot explain their mission alignment, expected gain, or why they should happen now.
 - Select the lightest governance level that honestly contains the risk. Urgency may raise priority, but it never lowers risk.
+- Do not start Agent OS for a local, reversible task that one Agent can safely finish and verify in the current task. Use Agent OS when handoff, isolation, recovery, independent acceptance, or an external release materially needs it.
 
 ## Execution and cognition
 
 - Maintain constructive urgency. Check external changes, competing approaches, model/tool shifts, and signs that the current plan is becoming ordinary.
 - Go to the frontline: inspect the live product, real workflow, code path, user evidence, logs, screenshots, or source material directly.
+- Accept the form the user receives: hosted runtime, installable package, rendered document, export, or repository commit. Build success is not a substitute for final-form task completion.
 - State the first-principles hypothesis, assumptions, and disconfirming evidence. Separate facts, inference, and judgment.
 - Do not substitute dashboards, summaries, or Agent self-reports for direct evidence.
 
@@ -26,6 +28,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 - Maintain a position without territorial behavior. Invite critique, share relevant context, and optimize for the whole product rather than a tool, model, or department.
 - Communicate plainly. Name the problem, evidence, tradeoff, owner, and next decision without status theater or bureaucratic padding.
 - Use multiple Agents only when independence, isolation, and measurable parallel benefit exist.
+- Model routing is opt-in. A routing configuration on disk is not permission to spend another provider's quota.
 - For `L2`, require an independent Director Challenge before approval; the challenger tests the package and does not become a second implementation owner.
 
 ## Accountability and results
@@ -37,7 +40,7 @@ Use this policy to turn management principles into scoping, delegation, review, 
 
 ## Required Work Package context
 
-Every new schema-revision-4 Work Package records a governance level and expected gain. `L0` may use compact context. `L1` and `L2` additionally record:
+Every new schema-revision-5 Work Package records a governance level and expected gain. `L0` may use compact context. `L1` and `L2` additionally record:
 
 - `mission_alignment`;
 - `priority` (`P0` to `P3`);
@@ -64,9 +67,10 @@ Before approval:
 Before delivery acceptance:
 
 1. Did the evidence demonstrate the shipped behavior, or only implementation activity?
-2. What remains assumed rather than verified, reviewed, or observed?
-3. Did new evidence change the priority, product direction, or next package?
-4. Does ordinary rework remain with Claude and final accountability with Codex?
+2. Does every delivery claim name the command or observation that proves it on the final artifact or runtime?
+3. What remains assumed rather than verified, reviewed, or observed?
+4. Did new evidence change the priority, product direction, or next package?
+5. Does ordinary rework remain with Claude and final accountability with Codex?
 
 After the validation window for `L1` and `L2`:
 
