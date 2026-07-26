@@ -124,7 +124,7 @@ def test_migration(parent: Path) -> None:
         CREATE TABLE reviews(id TEXT PRIMARY KEY, package_id TEXT NOT NULL, run_id TEXT NOT NULL, decision TEXT NOT NULL, branch_commit TEXT NOT NULL, evidence_sha256 TEXT NOT NULL, summary TEXT NOT NULL, created_at TEXT NOT NULL);
         """)
     output = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
-    assert output["from"] == "0.2" and output["to"] == "0.4" and output["database_backup"]
+    assert output["from"] == "0.2" and output["to"] == "0.5" and output["database_backup"]
     with sqlite3.connect(os_root / "state.db") as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 5
         columns = {row[1] for row in db.execute("PRAGMA table_info(runs)")}

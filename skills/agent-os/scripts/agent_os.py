@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent OS v0.4 proportional, outcome-aware delivery control plane."""
+"""Agent OS v0.5 proportional delivery and context control plane."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import sqlite3
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 
-AGENT_OS_VERSION = "0.4"
+AGENT_OS_VERSION = "0.5"
 SCHEMA_REVISION = 5
 DEFAULT_LOCK_SECONDS = 7200
 DECISIONS = {"ACCEPTED", "CHANGES_REQUESTED", "BLOCKED_DECISION"}
@@ -77,6 +78,15 @@ NON_RETRYABLE_RUNTIME_PATTERNS = (
     "working directory no longer exists", "worktree does not exist", "permission denied",
     "agent os routing config", "cc switch database", "unsupported provider schema",
 )
+CONTEXT_LINE_BUDGETS = {
+    "global_agents": 80,
+    "project_agents": 100,
+    "claude": 100,
+    "skill": 160,
+}
+MARKDOWN_BULLET = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(.+?)\s*$")
+MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+ABSOLUTE_CONTEXT_PATH = re.compile(r"`(/[^`]+(?:\.(?:md|MD)|/SKILL\.md))`")
 
 
 def now() -> datetime:
@@ -106,6 +116,200 @@ def read_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"expected JSON object: {path}")
     return value
+
+
+def context_kind(path: Path, project: Path, global_agents: Path | None) -> str:
+    if global_agents and path == global_agents:
+        return "global_agents"
+    if path == project / "AGENTS.md":
+        return "project_agents"
+    if path.name == "CLAUDE.md":
+        return "claude"
+    return "skill"
+
+
+def normalize_instruction(value: str) -> str:
+    value = re.sub(r"`([^`]+)`", r"\1", value)
+    value = re.sub(r"\[[^\]]+\]\([^)]+\)", "", value)
+    value = re.sub(r"[*_>#]", " ", value)
+    value = re.sub(r"[^\w\u4e00-\u9fff]+", " ", value.lower())
+    return " ".join(value.split())
+
+
+def markdown_instructions(path: Path, text: str) -> list[dict[str, Any]]:
+    instructions: list[dict[str, Any]] = []
+    in_fence = False
+    for number, line in enumerate(text.splitlines(), start=1):
+        if line.lstrip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        match = MARKDOWN_BULLET.match(line)
+        if not match:
+            continue
+        normalized = normalize_instruction(match.group(1))
+        if len(normalized) < 20:
+            continue
+        instructions.append({
+            "path": str(path),
+            "line": number,
+            "text": match.group(1).strip(),
+            "normalized": normalized,
+        })
+    return instructions
+
+
+def context_references(path: Path, text: str) -> list[dict[str, Any]]:
+    references: list[dict[str, Any]] = []
+    candidates = [match.group(1).split("#", 1)[0] for match in MARKDOWN_LINK.finditer(text)]
+    candidates.extend(match.group(1) for match in ABSOLUTE_CONTEXT_PATH.finditer(text))
+    for raw in dict.fromkeys(candidates):
+        if not raw or re.match(r"^[a-z][a-z0-9+.-]*:", raw, re.IGNORECASE) or raw.startswith("#"):
+            continue
+        target = Path(raw).expanduser()
+        if not target.is_absolute():
+            target = path.parent / target
+        target = target.resolve()
+        references.append({"source": str(path), "target": str(target), "exists": target.is_file()})
+    return references
+
+
+def cmd_context_doctor(args: argparse.Namespace) -> int:
+    project = Path(args.project).expanduser().resolve()
+    if not project.is_dir():
+        raise ValueError(f"context project does not exist: {project}")
+    global_agents: Path | None = None
+    if args.include_global:
+        configured = Path(args.global_agents).expanduser() if args.global_agents else Path(
+            os.environ.get("CODEX_HOME", "~/.codex")
+        ).expanduser() / "AGENTS.md"
+        global_agents = configured.resolve()
+    if any(value <= 0 for value in (
+        args.max_global_lines, args.max_project_lines,
+        args.max_claude_lines, args.max_skill_lines,
+    )):
+        raise ValueError("context line budgets must be positive")
+
+    requested: list[Path] = []
+    if global_agents:
+        requested.append(global_agents)
+    requested.extend((project / "AGENTS.md", project / "CLAUDE.md"))
+    requested.extend(Path(value).expanduser().resolve() for value in args.skill)
+    paths = list(dict.fromkeys(path for path in requested if path.is_file()))
+
+    budgets = {
+        "global_agents": args.max_global_lines,
+        "project_agents": args.max_project_lines,
+        "claude": args.max_claude_lines,
+        "skill": args.max_skill_lines,
+    }
+    files: list[dict[str, Any]] = []
+    all_instructions: list[dict[str, Any]] = []
+    references: list[dict[str, Any]] = []
+    findings: list[dict[str, Any]] = []
+    required_paths = ([global_agents] if global_agents else []) + [
+        Path(value).expanduser().resolve() for value in args.skill
+    ]
+    for path in dict.fromkeys(required_paths):
+        if path and not path.is_file():
+            findings.append({
+                "severity": "FAIL",
+                "code": "MISSING_CONTEXT_INPUT",
+                "path": str(path),
+                "message": "explicit context input does not exist",
+            })
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        kind = context_kind(path, project, global_agents)
+        lines = len(text.splitlines())
+        instructions = markdown_instructions(path, text)
+        file_references = context_references(path, text)
+        files.append({
+            "path": str(path),
+            "kind": kind,
+            "lines": lines,
+            "words": len(text.split()),
+            "characters": len(text),
+            "instructions": len(instructions),
+            "references": len(file_references),
+            "line_budget": budgets[kind],
+        })
+        all_instructions.extend(instructions)
+        references.extend(file_references)
+        if lines > budgets[kind]:
+            findings.append({
+                "severity": "WARN",
+                "code": "CONTEXT_BUDGET_EXCEEDED",
+                "path": str(path),
+                "message": f"{kind} has {lines} lines; budget is {budgets[kind]}",
+            })
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for instruction in all_instructions:
+        grouped.setdefault(str(instruction["normalized"]), []).append(instruction)
+    for occurrences in grouped.values():
+        locations = {(item["path"], item["line"]) for item in occurrences}
+        if len(locations) < 2:
+            continue
+        findings.append({
+            "severity": "WARN",
+            "code": "DUPLICATE_INSTRUCTION",
+            "message": occurrences[0]["text"],
+            "locations": [
+                {"path": item["path"], "line": item["line"]}
+                for item in occurrences
+            ],
+        })
+    for reference in references:
+        if not reference["exists"]:
+            findings.append({
+                "severity": "FAIL",
+                "code": "BROKEN_CONTEXT_REFERENCE",
+                "path": reference["source"],
+                "message": f"missing referenced file: {reference['target']}",
+            })
+
+    failures = sum(item["severity"] == "FAIL" for item in findings)
+    warnings = sum(item["severity"] == "WARN" for item in findings)
+    status = "FAIL" if failures else ("WARN" if warnings else "PASS")
+    report = {
+        "agent_os_version": AGENT_OS_VERSION,
+        "project": str(project),
+        "mutated": False,
+        "status": status,
+        "summary": {
+            "files": len(files),
+            "lines": sum(item["lines"] for item in files),
+            "words": sum(item["words"] for item in files),
+            "failures": failures,
+            "warnings": warnings,
+        },
+        "files": files,
+        "findings": findings,
+        "principle": "Keep non-derivable boundaries always on; defer procedures and rich references until relevant.",
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for item in files:
+            print(
+                f"{'PASS' if item['lines'] <= item['line_budget'] else 'WARN':4} "
+                f"{item['kind']:14} lines={item['lines']}/{item['line_budget']} "
+                f"words={item['words']} refs={item['references']} {item['path']}"
+            )
+        for finding in findings:
+            locations = finding.get("locations")
+            location_text = (
+                ", ".join(f"{item['path']}:{item['line']}" for item in locations)
+                if locations else str(finding.get("path", ""))
+            )
+            print(f"{finding['severity']:4} {finding['code']} {location_text} {finding['message']}")
+        print(
+            f"SUMMARY status={status} failures={failures} warnings={warnings} "
+            f"files={len(files)} lines={report['summary']['lines']} words={report['summary']['words']}"
+        )
+    return 1 if failures or (args.strict and warnings) else 0
 
 
 def default_routing_config_path() -> Path:
@@ -837,7 +1041,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     config_path = os_dir(root) / "project.json"
     config = read_json(config_path)
     source_version = str(config.get("agent_os_version", "0.2"))
-    if source_version not in {"0.2", "0.3", AGENT_OS_VERSION}:
+    if source_version not in {"0.2", "0.3", "0.4", AGENT_OS_VERSION}:
         raise ValueError(f"unsupported Agent OS upgrade source: {source_version}")
     backup: str | None = None
     db_path = os_dir(root) / "state.db"
@@ -2777,9 +2981,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     try:
         with db_connect(root) as db:
             run_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(runs)").fetchall()}
-            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.4 Run database schema"))
+            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.5 Run database schema"))
             tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.4 failure, learning, and outcome tables"))
+            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.5 failure, learning, and outcome tables"))
             for package in db.execute("SELECT * FROM work_packages").fetchall():
                 problems = validate_contract(root, load_package(root, package["id"]))
                 checks.append(("PASS" if not problems else "FAIL", f"package {package['id']}: {problems or package['status']}"))
@@ -2847,7 +3051,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
             read_only_prefixes = (
                 "pwd", "ls", "find ", "rg ", "grep ", "sed -n", "cat ", "head ", "tail ", "wc ",
                 "git status", "git diff", "git log", "git show", "git rev-parse", "git branch --show-current",
-                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os recover",
+                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os context-doctor", "agent-os recover",
                 "agent-os claude-status", "agent-shift status", "agent-shift doctor",
             )
             if not lock:
@@ -2924,6 +3128,18 @@ def parser() -> argparse.ArgumentParser:
     recover = sub.add_parser("recover"); recover.add_argument("project"); recover.set_defaults(func=cmd_recover)
     status = sub.add_parser("status"); status.add_argument("project"); status.set_defaults(func=cmd_status)
     doctor = sub.add_parser("doctor"); doctor.add_argument("project"); doctor.add_argument("--strict", action="store_true"); doctor.add_argument("--verbose", action="store_true"); doctor.set_defaults(func=cmd_doctor)
+    context_doctor = sub.add_parser("context-doctor", help="audit always-loaded context without mutating it")
+    context_doctor.add_argument("project")
+    context_doctor.add_argument("--include-global", action="store_true")
+    context_doctor.add_argument("--global-agents")
+    context_doctor.add_argument("--skill", action="append", default=[])
+    context_doctor.add_argument("--max-global-lines", type=int, default=CONTEXT_LINE_BUDGETS["global_agents"])
+    context_doctor.add_argument("--max-project-lines", type=int, default=CONTEXT_LINE_BUDGETS["project_agents"])
+    context_doctor.add_argument("--max-claude-lines", type=int, default=CONTEXT_LINE_BUDGETS["claude"])
+    context_doctor.add_argument("--max-skill-lines", type=int, default=CONTEXT_LINE_BUDGETS["skill"])
+    context_doctor.add_argument("--strict", action="store_true")
+    context_doctor.add_argument("--json", action="store_true")
+    context_doctor.set_defaults(func=cmd_context_doctor)
     hook = sub.add_parser("hook"); hook.add_argument("phase", choices=("pre", "post", "failure", "stop")); hook.set_defaults(func=cmd_hook)
     return result
 

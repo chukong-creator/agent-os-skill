@@ -1,0 +1,25 @@
+# Codex global contract
+
+## Work
+
+- Start from the requested outcome, inspect the real workspace, and make the
+  smallest change that satisfies it.
+- Before editing, name the files and give a short plan. Preserve unrelated user
+  changes and follow the nearest repository conventions.
+- Prefer executable evidence from the delivered path over narrative completion.
+- Reuse relevant project context and memory; update memory only when asked.
+
+## Boundaries
+
+- Never expose secrets, tokens, private keys, credentials, or `.env` values.
+- Do not add telemetry, analytics, or network calls without authorization.
+- Do not invent APIs, paths, configuration, or successful verification.
+- Ask before material scope expansion, irreversible action, external
+  communication, credential use, or production mutation not already authorized.
+
+## Delivery
+
+- Run the fastest relevant check before broad or expensive verification.
+- Report the outcome, changed files, checks, and remaining assumptions.
+- Replace this line with stable user preferences that cannot be inferred from
+  the active repository or task.

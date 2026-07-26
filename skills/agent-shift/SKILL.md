@@ -79,7 +79,7 @@ agent-shift merge <project-root> --work-unit <id>
 agent-shift worktree-remove <project-root> --work-unit <id>
 ```
 
-The merge command rejects both Agent-branch drift and base-branch drift after the final gate. Agent OS v0.3 owns rollback validation and execution; after a verified revert it uses `rollback-record` to synchronize Agent Shift to `ROLLED_BACK`. Do not call that mechanical command as a substitute for Agent OS rollback gates.
+The merge command rejects both Agent-branch drift and base-branch drift after the final gate. Agent OS owns rollback validation and execution; after a verified revert it uses `rollback-record` to synchronize Agent Shift to `ROLLED_BACK`. Do not call that mechanical command as a substitute for Agent OS rollback gates.
 
 ## Run the delivery loop
 

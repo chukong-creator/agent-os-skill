@@ -1,239 +1,145 @@
 ---
 name: agent-os
-description: Build and operate Agent OS v0.4 for proportional, permission-bounded delivery when work truly needs cross-Agent handoff, isolation, recovery, independent acceptance, or external-release evidence. Do not use it for a local reversible task that one Agent can finish and verify directly.
+description: Operate Agent OS v0.5 when delivery needs cross-Agent handoff, isolation, recovery, independent acceptance, or external-release evidence. Keep local reversible work on the normal single-Agent loop.
 ---
 
 # Agent OS
 
-Use Agent OS as the governance and evidence layer above Agent Shift. Keep Git reality, branches, worktrees, and merges in Agent Shift; keep work contracts, Runs, locks, evidence, review, Outcome, and Economics in `.agent-os/`.
+Agent OS is the governance and evidence layer above Agent Shift. Agent Shift
+owns Git baselines, branches, worktrees, and merge mechanics. Agent OS owns
+work contracts, risk, permissions, Runs, evidence, review, Outcome, recovery,
+and governance economics.
 
-## Decide whether to use it
+## Route before loading detail
 
-- Default to direct single-Agent execution for local, reversible work that fits in one task. Do not initialize Agent OS, create a Work Package, or start model routing merely because code is being changed.
-- Use Agent OS when at least one need is real: cross-Agent handoff, isolated concurrent work, recovery across sessions, independent acceptance, or an authorized external release.
-- Keep one Builder and Codex acceptance by default. Add a separate Reviewer or routed fallback only when it has a concrete independent benefit.
-- A routing configuration on disk is not authorization to consume that provider. Builder routing is opt-in through an explicit `--profile` or `--routing-config`.
+- Use direct single-Agent execution for local, reversible work that one Agent
+  can implement and verify in the current task.
+- Use Agent OS when handoff, isolation, recovery across sessions, independent
+  acceptance, or an authorized external release has concrete value.
+- Keep one Builder and Codex acceptance by default. Add a Reviewer or model
+  fallback only for a named independent benefit.
+- Read only the reference required by the current stage:
+  - risk and level selection:
+    [proportional-governance.md](references/proportional-governance.md)
+  - states, evidence, roles, and recovery:
+    [protocol.md](references/protocol.md)
+  - L1/L2 post-merge validation and cost:
+    [outcomes-and-economics.md](references/outcomes-and-economics.md)
+  - strategic or high-impact judgment:
+    [director-principles.md](references/director-principles.md)
+  - L2 maturity:
+    [maturity-contract.md](references/maturity-contract.md)
+  - explicit CC Switch routing:
+    [model-routing.md](references/model-routing.md)
+  - context and instruction maintenance:
+    [context-engineering.md](references/context-engineering.md)
+
+## Preserve the non-derivable invariants
+
+These are hard boundaries, not style suggestions:
+
+- one write-capable Agent per isolated worktree
+- Work Package allowlist plus protected governance paths
+- no credential, release, push, destructive Git, or irreversible action without
+  explicit authority
+- Evidence, Review, and Merge Gate bound to the same exact commit
+- non-repository deliveries checked in the final form the user receives
+- Reviewer never repairs or accepts its own implementation
+- Codex owns scope, architecture, governance, and acceptance
+- rollback stays narrow, explicit, and honest about external effects
+
+Let the Builder use judgment inside those boundaries and match the surrounding
+code's naming, comments, tests, and idiom.
 
 ## Establish project truth
 
-1. Read the nearest `AGENTS.md`, root `CLAUDE.md`, `.agent-shift/project.json`, and `.agent-os/project.json`.
-2. Run both doctors before starting a Work Package:
+Read the nearest `AGENTS.md`, root `CLAUDE.md`,
+`.agent-shift/project.json`, and `.agent-os/project.json`. Then run:
 
 ```bash
 agent-shift doctor <project-root>
 agent-os doctor <project-root>
 ```
 
-3. Treat root `CLAUDE.md` as the only durable Claude instruction source. Keep `.claude/settings.json` and `.claude/agents/verifier.md` as runtime adapters, not duplicate policy.
-4. Treat Work Package JSON as goal, risk, permission, and Outcome truth; Agent Shift as handoff truth; Git as file-state truth; Evidence plus Codex Review as delivery truth; post-merge Outcome Receipt as gain truth.
+Treat Work Package JSON as goal and permission truth, Agent Shift as handoff
+truth, Git as file-state truth, Evidence plus Review as delivery truth, and the
+Outcome Receipt as gain truth. Root `CLAUDE.md` is the durable Claude entry;
+`.claude/` files are runtime adapters.
 
-Read [references/proportional-governance.md](references/proportional-governance.md) before selecting L0, L1, or L2.
-Read [references/protocol.md](references/protocol.md) for states, evidence, roles, and recovery.
-Read [references/outcomes-and-economics.md](references/outcomes-and-economics.md) for post-merge validation and cost accounting.
-Read [references/director-principles.md](references/director-principles.md) before strategic, ambiguous, or high-impact work.
-Read [references/maturity-contract.md](references/maturity-contract.md) for the L2 five-question gate.
+Initialize or explicitly upgrade with `agent-os init --help` or
+`agent-os upgrade --help`. Upgrade refuses active writer locks, backs up SQLite,
+validates integrity, and never runs implicitly.
 
-## Operate as the Codex Director
+## Run the bounded delivery loop
 
-- Start from mission and durable user, product, technical, or industry value.
-- Separate urgency from risk. Priority never lowers governance level.
-- Select the lightest level that honestly covers impact, reversibility, external effects, and authority.
-- Give the Builder context, outcome, boundaries, and evidence standards. Do not prescribe every implementation step.
-- Inspect live products, code paths, logs, users, and sources; do not accept Agent self-report as result evidence.
-- Return ordinary implementation findings to Claude. Keep scope, architecture, governance, and acceptance with Codex.
-- Judge delivery and Outcome separately. A merge is not proof that expected gain happened.
+Use the command interface as the canonical procedure; inspect `--help` instead
+of copying stale examples:
 
-## Initialize or upgrade
-
-```bash
-agent-os init <project-root> --id <project-id> --name "Project name" --mission "Mission"
+```text
+package-create -> [director-challenge for L2] -> package-ready
+run-start -> claude-start -> verify -> verifier
+review -> rework-start or merge -> outcome-check for L1/L2
 ```
 
-The initializer preserves existing files and derives work units from `.agent-shift/project.json`. Review `.agent-os/project.json` and `.agent-os/policy/` before committing the governance baseline.
+Choose the lightest honest level:
 
-Upgrade v0.2 or v0.3 explicitly:
+- `L0`: local, reversible governed work with no risk factors or external effect.
+- `L1`: normal measurable delivery or reversible authorized release; requires an
+  Outcome Contract.
+- `L2`: production, privacy, credentials, migration, deletion, payment,
+  irreversible, or materially consequential work; adds independent Challenge,
+  learning, and five-question maturity.
 
-```bash
-agent-os upgrade <project-root>
-agent-os doctor <project-root> --strict
-```
+Classify delivery as `repo`, `artifact`, `installable`, or `live`. For the last
+three, bind each claim to a check against the final artifact or endpoint.
+Rebuild, repackaging, signing, upload, or artifact hash changes invalidate prior
+delivery evidence.
 
-Upgrade refuses active writer locks, creates an SQLite online backup, validates integrity, updates adapters and policy, and is idempotent. Normal commands never migrate implicitly. Schema revision 3 packages retain legacy full-maturity behavior without retroactive v0.4 Challenge or Outcome requirements.
+Claude owns implementation and ordinary rework in its assigned worktree.
+`CHANGES_REQUESTED` returns that same worktree to Claude. Mechanical verification
+checks structure, hashes, and the exact commit; it is not product acceptance.
 
-## Choose governance level
+## Keep routing finite
 
-Shared invariants for every Agent OS Run: one writer, isolated worktree, scoped paths, exact commit Evidence, Mechanical Verifier, resolved failures, Codex Review, Merge Gate, and narrow rollback. Provider fallback is optional and finite when explicitly enabled.
+Routing is opt-in through an explicit profile or routing config. It reads CC
+Switch metadata and injects provider settings only into the Claude child
+process; it never changes the global provider or stores credentials.
 
-- `L0`: reversible repository-local work, no risk factors or external effects. Learning, Maturity, and post-merge Outcome are not mandatory.
-- `L1`: normal delivery, including a reversible user-authorized release. Requires mission, decision rationale, and an explicit post-merge Outcome Contract. Any delivered artifact additionally requires the exact final artifact and claim-bound acceptance checks; live delivery also requires the final endpoint and rollback verification.
-- `L2`: high-impact or materially consequential external delivery. Adds first principles, alternative, tradeoff, rollback check, independent Director Challenge, Learning, and five-question maturity.
+Only explicit provider or quota terminal failures advance through a finite,
+unique fallback chain. Permission waits keep the same writer. Unknown failures,
+manual stops, suspected stalls, repeated profiles, and exhausted chains never
+start a second writer or loop indefinitely.
 
-High-risk factors such as production, privacy, credentials, migration, deletion, payment, and irreversible action require L2. A reversible release does not become L2 merely because it is external.
+## Recover without inventing success
 
-## Create a Work Package
+- `recover` is read-only diagnosis.
+- `runtime-recover` resumes the same failed Run, lock, branch, worktree, and
+  partial edits after an explicit reason.
+- `rollback` only reverts the latest recorded no-ff merge when protected-branch,
+  commit, and Evidence gates match.
+- External effects remain `CODE_REVERTED_EXTERNAL_PENDING` until separately
+  verified.
 
-Minimal L0:
+Record command output, exit status, duration, SHA-256, diff, paths, commit, and
+timestamp. Classify claims as `verified`, `reviewed`, `observed`, or `assumed`;
+never promote assumptions. One Run may propose a learning rule but may not edit
+Policy or this Skill automatically.
 
-```bash
-agent-os package-create <project-root> \
-  --id wp-001 --work-unit <unit-id> --governance-level L0 \
-  --goal "Small observable goal" --expected-gain "Delivery-level gain" \
-  --allow app.js --verify "npm test" --rollback-check "npm test"
-agent-os package-ready <project-root> --id wp-001
-```
+## Right-size context
 
-Standard L1 adds the decision and Outcome Contract:
-
-```bash
-agent-os package-create <project-root> \
-  --id wp-001 --work-unit <unit-id> --governance-level L1 \
-  --goal "Observable goal" --objective "Bounded objective" \
-  --mission-alignment "Why this advances the mission" \
-  --priority P1 --expected-gain "Expected user or business gain" \
-  --selected-approach "Chosen execution approach" \
-  --rationale "Why it fits the evidence and boundaries" \
-  --outcome-metric "Metric name" --outcome-baseline "Current value" \
-  --outcome-target "Target value" --outcome-validation-window "7 days" \
-  --outcome-evidence-source "Analytics export or user study" \
-  --allow app.js --verify "npm test" --rollback-check "npm test"
-agent-os package-ready <project-root> --id wp-001
-```
-
-## Accept the delivered form, not the source
-
-Classify what the user will actually receive:
-
-- `repo`: reviewed source/commit only.
-- `artifact`: an exported document, archive, media file, or other directly inspected output.
-- `installable`: an iOS, macOS, desktop, mobile, or packaged application that must be installed and launched in its declared test runtime.
-- `live`: a hosted page or service that must be exercised at its final endpoint, including authentication when the product requires it.
-
-For `artifact`, `installable`, and `live`, every `--acceptance-check` binds a plain-language claim to the command that proves it using `CLAIM::COMMAND`. A build command is not an install/launch check. An HTTP 200 is not an interaction check. Local source-page evidence is not evidence for a repackaged or hosted runtime.
-
-For a reversible live release, add the exact release contract. The acceptance check must exercise the declared endpoint and the core task; local dev-server checks do not qualify:
+Run the read-only audit after changing `AGENTS.md`, `CLAUDE.md`, or a Skill:
 
 ```bash
-agent-os package-create <project-root> \
-  --id wp-release --work-unit <unit-id> --governance-level L1 \
-  --goal "Publish a usable release" --expected-gain "Users can complete the core flow" \
-  --delivery-target live --artifact-path dist \
-  --live-endpoint "https://example.com/app" \
-  --acceptance-check "Core flow works in the hosted runtime::node scripts/check-live.mjs https://example.com/app" \
-  --external-side-effect "reversible static release" \
-  --rollback-check "documented previous release restore" \
-  <L1 decision and Outcome arguments>
+agent-os context-doctor <project-root> --include-global \
+  --skill /Users/fanchao/.codex/skills/agent-os/SKILL.md --strict
 ```
 
-For an installable app, bind acceptance to the packaged runtime rather than the Xcode/project build:
-
-```bash
-agent-os package-create <project-root> \
-  --id wp-ios --work-unit <unit-id> --governance-level L1 \
-  --goal "Deliver an installable iOS build" --expected-gain "The packaged app installs and launches" \
-  --delivery-target installable --artifact-path build/Vitality.app \
-  --acceptance-check "App installs and launches in the simulator::scripts/check-ios-package.sh build/Vitality.app" \
-  <L1 decision and Outcome arguments>
-```
-
-`verify` hashes the declared final artifacts, runs every claim-bound acceptance check, and proves the checks did not mutate the artifacts. `review --decision ACCEPTED` reruns those checks against the unchanged artifact. Any rebuild, copy, rename, repackaging, signing, notarization, upload, or store processing creates a new delivery boundary and requires verification again.
-
-For L2, add `--risk-factor`, `--first-principles`, `--alternative OPTION::REASON`, `--tradeoff`, and any `--external-side-effect`, then record an independent challenge before `package-ready`:
-
-```bash
-agent-os director-challenge <project-root> \
-  --package wp-001 --reviewer independent-reviewer --decision PASS \
-  --summary "Evidence-backed challenge conclusion" \
-  --review-file /path/to/review.md
-```
-
-Commit the approved Work Package, Challenge when present, and governance on protected `main` before starting a Run.
-
-## Run the delivery loop
-
-```bash
-agent-os run-start <project-root> --package wp-001 --run run-wp-001-r1 --agent claude
-agent-os claude-start <project-root> --run run-wp-001-r1
-agent-os claude-status <project-root> --run run-wp-001-r1
-agent-os verify <project-root> --run run-wp-001-r1
-agent-os verifier <project-root> --run run-wp-001-r1
-agent-os review <project-root> --run run-wp-001-r1 --decision ACCEPTED --summary "..."
-agent-os merge <project-root> --run run-wp-001-r1
-```
-
-L2 additionally requires before acceptance:
-
-```bash
-agent-os learn <project-root> --run run-wp-001-r1 \
-  --outcome no-change --observation "..." --reason "..."
-agent-os maturity-report <project-root> --run run-wp-001-r1
-```
-
-- Claude owns implementation and ordinary rework in the assigned Agent branch.
-- Run start freezes Decision Trace, Permission Manifest, Rollback Plan, and Outcome Contract; L2 also freezes the Director Challenge.
-- Mechanical Verifier checks Manifest PASS, exact commit, and evidence hashes. It never fixes or accepts.
-- `CHANGES_REQUESTED` returns the same worktree to Claude through `rework-start`. Intermediate Review artifacts stay Run-local; only the final `ACCEPTED` Review is committed to protected product history.
-- L0 merge ends at `MERGED`; L1/L2 merge ends at `OUTCOME_PENDING` and writes Run Economics.
-
-## Route models without losing the writer
-
-Model routing is opt-in. `claude-start` inherits the normal Claude environment unless Codex explicitly passes `--profile` or `--routing-config`; the mere existence of `~/.config/agent-os/model-routing.json` does not select GLM, Kimi, or another provider. When enabled, routing resolves the Run role from read-only CC Switch metadata and injects provider configuration only into that Claude child process. It never mutates the global Provider or stores credentials.
-
-Builder and Reviewer use separate profiles. Only explicit terminal quota/provider failures advance through a finite unique chain. Unknown failures, manual stops, repeated profiles, and exhausted chains never loop. `SUSPECTED_STALL` observes inactivity without starting a second writer.
-
-Permission prompts remain non-terminal. Routing state becomes `WAITING_FOR_PERMISSION`, preserves the same writer, records what is awaited, and disables fallback until the wait ends. Run Economics counts observed launch events even when a routed-state file is reset; trusted token usage remains `null` when the runtime does not expose it.
-
-## Validate Outcome and economics
-
-L1/L2 Outcome requires a hashed evidence file:
-
-```bash
-agent-os outcome-check <project-root> --run run-wp-001-r1 \
-  --result CONFIRMED --observed-value "Observed value" \
-  --evidence-file /path/to/evidence.json --note "Why it supports the result"
-agent-os economics <project-root> --run run-wp-001-r1
-```
-
-Outcome results are `OUTCOME_CONFIRMED`, `OUTCOME_REFUTED`, or `OUTCOME_INCONCLUSIVE`. Economics records timestamps and counts; unavailable token usage remains `null` and is never estimated.
-
-## Record failures and learning
-
-```bash
-agent-os failure-record <project-root> --run <run-id> --stage VERIFYING \
-  --category verification --blocker-class model-fixable \
-  --symptom "..." --root-cause "..."
-agent-os failure-resolve <project-root> --run <run-id> \
-  --id <failure-id> --resolution "What changed and why"
-```
-
-Use `learn --outcome proposal` only for a repeatable process improvement with hypothesis, effect, metric, and validation window. One Run may propose a rule; it may not auto-edit Policy or Skill.
-
-## Roll back and recover
-
-```bash
-agent-os rollback <project-root> --run <run-id> --reason "Why rollback is needed"
-agent-os rollback <project-root> --run <run-id> --reason "..." --execute
-agent-os recover <project-root>
-agent-os runtime-recover <project-root> --run <run-id> --reason "Why the same Run is safe to resume"
-```
-
-Automatic rollback remains narrow: latest recorded no-ff merge, clean protected branch, exact HEAD, matching accepted commit and Evidence, explicit execute and reason. Outcome metadata does not add a Git commit above the merge. External effects require `--ack-external` and remain `CODE_REVERTED_EXTERNAL_PENDING` until separately verified.
-
-`recover` is read-only. `runtime-recover` is the explicit, minimal mutation for a `RUNTIME_FAILED` or `LOCK_EXPIRED` Run: it restores that Run's lock and reuses its Package, branch, worktree, and partial edits instead of creating duplicate work or context.
-
-## Evidence discipline
-
-- Save command output, exit code, duration, SHA-256, diff, paths, commit, and timestamp.
-- Classify claims as `verified`, `reviewed`, `observed`, or `assumed`; never promote assumptions.
-- Keep raw Runs, Outcome Receipts, Economics, SQLite, and routing state local and ignored.
-- Keep Work Packages, Policy, Reviews, Challenges, and Improvement Proposals reviewable in Git.
-- Do not count disposable tests or migrated legacy work as real v0.4 acceptance packages.
+Keep non-derivable boundaries and project gotchas always loaded. Move procedures,
+examples, rubrics, and domain guidance behind references or Skills. A broken
+reference fails; duplication and budget excess warn, and fail under `--strict`.
 
 ## Resources
 
-- `scripts/agent_os.py`: deterministic control plane and Claude hook endpoint.
-- `references/proportional-governance.md`: L0/L1/L2 routing and Challenge rules.
-- `references/outcomes-and-economics.md`: post-merge gain and governance-cost contract.
-- `references/protocol.md`: canonical states, evidence, and recovery rules.
-- `references/director-principles.md`: Codex management doctrine and behavioral gates.
-- `references/maturity-contract.md`: L2 five-question contract.
-- `references/model-routing.md`: CC Switch-backed finite role routing.
+- `scripts/agent_os.py`: deterministic control plane and context audit
+- `references/`: detailed policy loaded by task stage
+- `assets/`: machine-readable governance defaults

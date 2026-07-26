@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.4 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
+  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.5 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
 </p>
 
 <p align="center">
@@ -22,7 +22,7 @@ Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用�
 >
 > **Git** 是版本神经系统；**Evidence** 是组织记忆；**Agent OS** 是治理与恢复层。
 
-当前版本：**Agent OS v0.4 + Agent Shift protocol v2**。
+当前版本：**Agent OS v0.5 + Agent Shift protocol v2**。
 
 ## 30 秒看懂
 
@@ -79,6 +79,18 @@ flowchart TD
 | **收益闭环** | L1/L2 冻结指标、基线、目标、验证窗口和证据源，合并后回访 | 区分“代码交付”与“预期收益真的发生” |
 | **治理记账** | 自动计算时长、证据等待、验证耗时、重试与 fallback；未知 token 保持空值 | 治理系统也必须证明自己没有无限膨胀 |
 | **恢复与学习** | 精确 revert；L2 使用 Director Challenge、maturity report 与 improvement proposal | 高风险失败可恢复，下一次有依据地变好 |
+| **Context Diet** | `context-doctor` 盘点常驻上下文、重复指令、预算和断裂引用 | Agent 看到恰好够用的约束，不被历史提示词拖慢 |
+
+### Context Diet：规则少一点，边界硬一点
+
+v0.5 将 Agent OS 主 Skill 从操作手册改成路由器：权限、密钥、决策权、精确 Commit、验收与回滚等不可推导边界始终加载；具体流程、示例、Rubric 和领域知识放入 references，只有相关任务才读取。
+
+```bash
+agent-os context-doctor . --include-global \
+  --skill /Users/fanchao/.codex/skills/agent-os/SKILL.md --strict
+```
+
+检查只读且不会自动删文件。断裂引用直接失败；重复规则和上下文预算超限给出警告，并在 `--strict` 下成为门禁。它不会假装能机械判断所有语义冲突：删规则前仍要确认模型能否从现场推导，以及猜错后是否一定会被测试或审查发现。
 
 ### 三种治理通道
 
@@ -179,7 +191,7 @@ git status --short
 agent-shift init . --name "My Project"
 ```
 
-把 [`examples/project.gitignore`](examples/project.gitignore) 合并进项目 `.gitignore`。保留项目已有的 `AGENTS.md`；没有时可从 [`examples/AGENTS.md.template`](examples/AGENTS.md.template) 起步：
+把 [`examples/project.gitignore`](examples/project.gitignore) 合并进项目 `.gitignore`。保留项目已有的 `AGENTS.md`；没有时可从 [`examples/AGENTS.md.template`](examples/AGENTS.md.template) 起步。全局 Codex 指令可参考 [`examples/CODEX.global.AGENTS.md.template`](examples/CODEX.global.AGENTS.md.template)，但只放跨项目且不可推导的边界：
 
 ```bash
 test -f AGENTS.md || \
@@ -483,7 +495,7 @@ git pull --ff-only
 agent-os upgrade /path/to/project
 ```
 
-安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 项目迁移到 v0.4，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
+安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 / v0.4 项目迁移到 v0.5，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
 
 安全卸载：
 
@@ -499,6 +511,7 @@ cd agent-os-skill
 ```bash
 python3 skills/agent-shift/scripts/test_agent_shift_views.py
 python3 skills/agent-os/scripts/test_agent_os_routing.py
+python3 skills/agent-os/scripts/test_agent_os_v05.py
 python3 skills/agent-os/scripts/test_agent_os_v04.py
 python3 skills/agent-os/scripts/test_agent_os_v03.py
 ```
@@ -509,7 +522,7 @@ python3 skills/agent-os/scripts/test_agent_os_v03.py
 
 ## English overview
 
-**Agent OS v0.4 turns Codex, Claude Code, and Git into an observable, proportionally governed, outcome-aware, and recoverable AI software team.**
+**Agent OS v0.5 turns Codex, Claude Code, and Git into an observable, context-efficient, proportionally governed, outcome-aware, and recoverable AI software team.**
 
 - **Codex Director** owns mission alignment, scope, acceptance criteria, findings, merge authority, and final delivery decisions.
 - **Claude Builder** owns implementation and ordinary rework inside an isolated Git worktree.

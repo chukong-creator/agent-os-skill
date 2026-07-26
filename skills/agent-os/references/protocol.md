@@ -1,4 +1,4 @@
-# Agent OS v0.4 governed delivery protocol
+# Agent OS v0.5 governed delivery protocol
 
 ## Truth sources
 
