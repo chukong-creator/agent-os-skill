@@ -20,6 +20,14 @@
 
 Human-readable handoff and return files are views. Detect drift; never treat them as a second state store.
 
+After an Agent Shift handoff reaches `ACCEPTED` or a recorded rollback state,
+`agent-os doctor` reconciles it against the canonical Git worktree. The worktree
+must remain on its protected baseline branch, tracked files must be clean, and
+the recorded merge or rollback commit must remain an ancestor of that branch.
+Later intentional commits are valid history; untracked local assets are reported
+but excluded from tracked-code drift. `agent-os merge` runs the same check before
+recording delivery completion.
+
 ## Proportional governance
 
 Use the lightest level that honestly contains the risk:
@@ -79,6 +87,9 @@ If any commit changes after verification, rerun evidence collection, Verifier, a
 - Hooks reject writes without a matching non-expired lock.
 - `recover` reports expired locks, missing worktrees, dirty worktrees, branch drift, and incomplete evidence without mutating them.
 - `runtime-recover` may restore only a `RUNTIME_FAILED` or `LOCK_EXPIRED` Run whose Package still points to it and whose recorded worktree and branch still exist. It preserves partial work and reuses the same Run.
+- `run-cancel` may close only an orphaned inactive failed or blocked Run with no
+  writer lock and no dirty worktree. It refuses the current Agent Shift handoff
+  and preserves the clean worktree until Codex removes it explicitly.
 - Forced release requires a reason and an activity record. Never auto-remove dirty worktrees.
 
 ## Evidence and economics

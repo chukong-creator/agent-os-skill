@@ -80,6 +80,7 @@ flowchart TD
 | **治理记账** | 自动计算时长、证据等待、验证耗时、重试与 fallback；未知 token 保持空值 | 治理系统也必须证明自己没有无限膨胀 |
 | **恢复与学习** | 精确 revert；L2 使用 Director Challenge、maturity report 与 improvement proposal | 高风险失败可恢复，下一次有依据地变好 |
 | **Context Diet** | `context-doctor` 盘点常驻上下文、重复指令、预算和断裂引用 | Agent 看到恰好够用的约束，不被历史提示词拖慢 |
+| **验收后漂移门禁** | `doctor` 交叉检查受保护分支、tracked 工作树与已记录 merge / rollback ancestry | 防止状态显示已验收、真实仓库却已经漂移 |
 
 ### Context Diet：规则少一点，边界硬一点
 

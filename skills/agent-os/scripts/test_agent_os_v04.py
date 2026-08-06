@@ -8,7 +8,7 @@ import sqlite3
 import tempfile
 from pathlib import Path
 
-from test_agent_os_v03 import AGENT_OS, bootstrap, call, commit, write
+from test_agent_os_v03 import AGENT_OS, AGENT_SHIFT, bootstrap, call, commit, write
 
 
 def initialize(root: Path, project_id: str) -> None:
@@ -69,6 +69,40 @@ def test_l0_lightweight(parent: Path) -> None:
     assert economics["token_usage"]["input_tokens"] is None
     assert economics["token_usage"]["source"] == "unavailable-from-runtime"
     call([AGENT_OS, "doctor", str(root), "--strict"], root)
+
+
+def test_post_acceptance_drift_gate(parent: Path) -> None:
+    root = parent / "post-acceptance-drift"
+    initialize(root, "post-acceptance-drift")
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-drift", "--work-unit", "default",
+        "--goal", "Detect tracked changes after acceptance",
+        "--expected-gain", "Accepted Git state remains mechanically reconcilable",
+        "--allow", "app.txt", "--verify", "grep -q success app.txt",
+    ], root)
+    deliver_candidate(root, "wp-drift", "run-drift")
+    call([
+        AGENT_OS, "review", str(root), "--run", "run-drift", "--decision", "ACCEPTED",
+        "--summary", "The candidate passes exact-commit delivery checks",
+    ], root)
+    call([AGENT_OS, "merge", str(root), "--run", "run-drift"], root)
+    call([AGENT_OS, "doctor", str(root), "--strict"], root)
+
+    write(root / "local-observation.txt", "untracked local evidence\n")
+    call([AGENT_OS, "doctor", str(root), "--strict"], root)
+    call([AGENT_SHIFT, "baseline", str(root), "--work-unit", "default"], root)
+
+    write(root / "app.txt", "uncommitted drift\n")
+    drift = call([AGENT_OS, "doctor", str(root), "--strict"], root, expected=1)
+    assert "post-acceptance tracked drift: app.txt" in drift
+
+    commit(root, "fix: reconcile accepted product state")
+    call([AGENT_OS, "doctor", str(root), "--strict"], root)
+
+    call(["git", "switch", "-c", "codex/future-work"], root)
+    branch_drift = call([AGENT_OS, "doctor", str(root), "--strict"], root, expected=1)
+    assert "post-acceptance canonical worktree branch is codex/future-work; expected main" in branch_drift
+    call(["git", "switch", "main"], root)
 
 
 def test_l1_live_delivery_binds_final_artifact_and_endpoint(parent: Path) -> None:
@@ -390,10 +424,46 @@ def test_runtime_recover_reuses_same_run(parent: Path) -> None:
     assert routing["status"] == "RUNTIME_RECOVERY_READY"
 
 
+def test_orphaned_run_can_be_cancelled(parent: Path) -> None:
+    root = parent / "run-cancel"
+    initialize(root, "run-cancel")
+    call([
+        AGENT_OS, "package-create", str(root), "--id", "wp-cancel", "--work-unit", "default",
+        "--governance-level", "L0", "--goal", "Close an obsolete interrupted Run",
+        "--expected-gain", "Recovery no longer reports a deliberately abandoned Run",
+        "--allow", "app.txt", "--verify", "grep -q success app.txt",
+    ], root)
+    call([AGENT_OS, "package-ready", str(root), "--id", "wp-cancel"], root)
+    commit(root, "plan: approve cancellation fixture")
+    started = json.loads(call([
+        AGENT_OS, "run-start", str(root), "--package", "wp-cancel",
+        "--run", "run-cancel", "--agent", "claude",
+    ], root))
+    call([
+        AGENT_OS, "lock-release", str(root), "--work-unit", "default",
+        "--reason", "simulate an obsolete interrupted Run",
+    ], root)
+    state_path = root / ".agent-shift/state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["handoff_id"] = "newer-handoff"
+    write(state_path, json.dumps(state, indent=2) + "\n")
+    cancelled = json.loads(call([
+        AGENT_OS, "run-cancel", str(root), "--run", "run-cancel",
+        "--reason", "A newer handoff superseded this clean abandoned Run",
+    ], root))
+    assert cancelled["status"] == "CANCELLED"
+    assert cancelled["worktree"] == started["worktree"]
+    assert cancelled["worktree_preserved"] is True
+    with sqlite3.connect(root / ".agent-os/state.db") as db:
+        assert db.execute("SELECT status FROM runs WHERE id='run-cancel'").fetchone()[0] == "CANCELLED"
+        assert db.execute("SELECT status FROM work_packages WHERE id='wp-cancel'").fetchone()[0] == "CANCELLED"
+
+
 def main() -> int:
     parent = Path(tempfile.mkdtemp(prefix="agent-os-v04-", dir="/tmp"))
     try:
         test_l0_lightweight(parent)
+        test_post_acceptance_drift_gate(parent)
         test_l1_live_delivery_binds_final_artifact_and_endpoint(parent)
         test_installable_delivery_requires_real_package_acceptance(parent)
         test_l1_outcome_and_rollback(parent)
@@ -403,15 +473,17 @@ def main() -> int:
         test_v03_explicit_migration(parent)
         test_migration_refuses_active_lock(parent)
         test_runtime_recover_reuses_same_run(parent)
+        test_orphaned_run_can_be_cancelled(parent)
         print(json.dumps({
             "result": "PASS", "workspace": str(parent),
             "scenarios": [
-                "L0-default-lightweight", "L1-live-artifact-endpoint-gate", "L1-installable-package-acceptance", "L1-risk-forces-L2", "L1-outcome-contract",
+                "L0-default-lightweight", "post-acceptance-drift-gate", "L1-live-artifact-endpoint-gate", "L1-installable-package-acceptance", "L1-risk-forces-L2", "L1-outcome-contract",
                 "run-local-intermediate-review",
                 "outcome-inconclusive", "outcome-confirmed", "outcome-refuted",
                 "outcome-safe-rollback", "L2-director-challenge", "L2-maturity",
                 "governance-economics", "v03-explicit-migration", "migration-active-lock-refusal",
                 "same-run-runtime-recovery",
+                "orphaned-run-cancellation",
             ],
         }, indent=2))
         return 0

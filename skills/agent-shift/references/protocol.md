@@ -49,6 +49,15 @@
 - Require independent Codex review after the mechanical gate. A passing build is not product acceptance.
 - Permit only Codex main agent to set `ACCEPTED` and merge the exact gated commit. If either the Agent branch or protected base moves afterward, invalidate the gate.
 - Preserve branches and commits as audit history. Remove only clean worktrees after merge; never force-remove user work.
+- After acceptance or rollback, `doctor` requires the canonical worktree to be
+  on the protected baseline branch, tracked files to be clean, and the recorded
+  merge or rollback commit to remain in that branch's ancestry. Later committed
+  history is allowed; untracked local assets are counted but excluded from the
+  tracked-code drift decision.
+- Baseline recording, worktree creation, and merge use the same tracked-file
+  boundary. Git still refuses an operation when an untracked path would be
+  overwritten; removal of an Agent worktree continues to require it to be fully
+  clean so local work is never discarded.
 - Record `ROLLED_BACK` only after Agent OS verifies commit identity, explicit authority, revert result, rollback checks, Receipt, and external-side-effect status. Agent Shift never performs the revert itself.
 
 ## State machine
