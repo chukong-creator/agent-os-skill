@@ -203,6 +203,10 @@ def repo_is_clean(repo: Path) -> bool:
     return not git_output(repo, "status", "--porcelain")
 
 
+def repo_tracked_is_clean(repo: Path) -> bool:
+    return not git_output(repo, "status", "--porcelain", "--untracked-files=no")
+
+
 def path_is_allowed(path: str, allowed: list[str]) -> bool:
     normalized = path.rstrip("/")
     return any(normalized == item.rstrip("/") or normalized.startswith(item.rstrip("/") + "/") for item in allowed)
@@ -444,13 +448,20 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 if unit_root.is_dir():
                     git_code, git_head = run_command("git rev-parse --verify HEAD", unit_root, timeout=10)
                     git_required = unit.get("git_policy", {}).get("required", True)
+                    base_branch = str(unit.get("git_policy", {}).get("baseline_branch", "main"))
+                    terminal = bool(state and state.get("status") in TERMINAL_STATUSES)
                     level = "PASS" if git_code == 0 else ("FAIL" if git_required else "WARN")
                     checks.append((level, f"work unit {unit['id']} Git HEAD {'available' if git_code == 0 else 'unavailable'}"))
+                    branch_code, current_branch = run_command("git branch --show-current", unit_root, timeout=10)
+                    branch_ok = branch_code == 0 and (not terminal or current_branch == base_branch)
+                    checks.append((
+                        "PASS" if branch_ok else "FAIL",
+                        f"work unit {unit['id']} canonical branch is {current_branch or '(detached)'}; expected {base_branch} after acceptance",
+                    ))
                     baseline = (baselines or {}).get("work_units", {}).get(str(unit["id"]))
                     if baseline and git_code == 0:
                         baseline_commit = str(baseline.get("commit", ""))
                         commit_code, _ = run_command(f"git cat-file -e {baseline_commit}^{{commit}}", unit_root, timeout=10)
-                        terminal = bool(state and state.get("status") in TERMINAL_STATUSES)
                         if terminal and commit_code == 0:
                             ancestor_code, _ = run_command(
                                 f"git merge-base --is-ancestor {baseline_commit} HEAD", unit_root, timeout=10
@@ -463,8 +474,29 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                         checks.append(("PASS" if baseline_ok else "FAIL", message))
                     else:
                         checks.append(("FAIL" if git_required else "WARN", f"work unit {unit['id']} baseline record missing"))
-                    clean_code, clean_output = run_command("git status --porcelain", unit_root, timeout=10)
-                    checks.append(("PASS" if clean_code == 0 and not clean_output else "WARN", f"work unit {unit['id']} base working tree {'clean' if clean_code == 0 and not clean_output else 'dirty'}"))
+                    tracked_code, tracked_output = run_command("git status --porcelain --untracked-files=no", unit_root, timeout=10)
+                    tracked_clean = tracked_code == 0 and not tracked_output
+                    checks.append((
+                        "PASS" if tracked_clean else ("FAIL" if terminal else "WARN"),
+                        f"work unit {unit['id']} tracked base worktree {'clean' if tracked_clean else 'drifted'}",
+                    ))
+                    untracked_code, untracked_output = run_command("git ls-files --others --exclude-standard", unit_root, timeout=10)
+                    untracked_count = len([line for line in untracked_output.splitlines() if line]) if untracked_code == 0 else 0
+                    checks.append((
+                        "PASS" if untracked_code == 0 else "WARN",
+                        f"work unit {unit['id']} excludes {untracked_count} untracked path(s) from tracked drift",
+                    ))
+                    if terminal and state and state.get("active_work_unit") == unit.get("id"):
+                        anchor_key = "rollback_commit" if state.get("status") in {"ROLLED_BACK", "CODE_REVERTED_EXTERNAL_PENDING"} else "merge_commit"
+                        anchor = str(state.get(anchor_key) or "")
+                        anchor_code, _ = run_command(f"git cat-file -e {anchor}^{{commit}}", unit_root, timeout=10) if anchor else (1, "")
+                        ancestor_code, _ = run_command(
+                            f"git merge-base --is-ancestor {anchor} {base_branch}", unit_root, timeout=10
+                        ) if anchor_code == 0 else (1, "")
+                        checks.append((
+                            "PASS" if ancestor_code == 0 else "FAIL",
+                            f"work unit {unit['id']} recorded {anchor_key} is an ancestor of {base_branch}",
+                        ))
                     hooks_code, hooks_output = run_command("git config --get core.hooksPath", unit_root, timeout=10)
                     hooks_ok = hooks_code == 0 and hooks_output == ".githooks"
                     checks.append(("PASS" if hooks_ok else "FAIL", f"work unit {unit['id']} protected-main hooks configured"))
@@ -579,8 +611,8 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     expected_branch = str(unit.get("git_policy", {}).get("baseline_branch", "main"))
     if branch != expected_branch:
         raise ValueError(f"baseline must be recorded on {expected_branch}, current branch is {branch}")
-    if not repo_is_clean(repo):
-        raise ValueError(f"baseline working tree is dirty: {repo}")
+    if not repo_tracked_is_clean(repo):
+        raise ValueError(f"baseline tracked worktree is dirty: {repo}")
     baselines_path = root / ".agent-shift" / "baselines.json"
     lock_path = root / ".agent-shift" / ".baseline.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
@@ -613,8 +645,8 @@ def cmd_worktree_create(args: argparse.Namespace) -> int:
             f"recorded baseline {baseline_commit[:12]} does not match {base_branch} "
             f"{current_base_commit[:12]}; review and record a fresh baseline"
         )
-    if not repo_is_clean(repo):
-        raise ValueError(f"base working tree is dirty: {repo}")
+    if not repo_tracked_is_clean(repo):
+        raise ValueError(f"base tracked worktree is dirty: {repo}")
     safe_handoff = "".join(character if character.isalnum() or character in "-_" else "-" for character in args.handoff_id)
     prefix = str(unit.get("git_policy", {}).get("agent_branch_prefix", "agent"))
     branch = f"{prefix}/{args.agent}/{args.work_unit}/{safe_handoff}"
@@ -730,8 +762,8 @@ def cmd_merge(args: argparse.Namespace) -> int:
     base_branch = str(unit.get("git_policy", {}).get("baseline_branch", "main"))
     if git_output(repo, "branch", "--show-current") != base_branch:
         raise ValueError(f"base worktree must be on {base_branch}")
-    if not repo_is_clean(repo):
-        raise ValueError("base worktree must be clean before merge")
+    if not repo_tracked_is_clean(repo):
+        raise ValueError("base tracked worktree must be clean before merge")
     current_base_commit = git_output(repo, "rev-parse", base_branch)
     if current_base_commit != gate.get("base_commit"):
         raise ValueError("base branch changed after merge gate; run the gate again")

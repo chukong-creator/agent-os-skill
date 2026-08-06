@@ -939,6 +939,66 @@ def repo_root(root: Path, unit: dict[str, Any]) -> Path:
     return (root / str(unit["repo_root"])).resolve()
 
 
+def post_acceptance_git_checks(root: Path) -> list[tuple[str, str]]:
+    """Reconcile the latest accepted Agent Shift handoff with canonical Git state."""
+    state_path = root / ".agent-shift" / "state.json"
+    if not state_path.is_file():
+        return []
+    state = read_json(state_path)
+    if state.get("status") not in {"ACCEPTED", "ROLLED_BACK", "CODE_REVERTED_EXTERNAL_PENDING"}:
+        return []
+    unit_id = str(state.get("active_work_unit") or "")
+    if not unit_id:
+        return [("FAIL", "post-acceptance drift gate has no active work unit")]
+    try:
+        unit = work_unit(root, unit_id)
+        repo = repo_root(root, unit)
+        base_branch = str(unit.get("git_policy", {}).get("baseline_branch", "main"))
+        current_branch = git(repo, "branch", "--show-current")
+        tracked_status = git(repo, "status", "--porcelain", "--untracked-files=no")
+        untracked = [line for line in git(repo, "ls-files", "--others", "--exclude-standard").splitlines() if line]
+        checks = [
+            (
+                "PASS" if current_branch == base_branch else "FAIL",
+                f"post-acceptance canonical worktree branch is {current_branch or '(detached)'}; expected {base_branch}",
+            ),
+            (
+                "PASS" if not tracked_status else "FAIL",
+                "post-acceptance tracked worktree is clean"
+                if not tracked_status
+                else "post-acceptance tracked drift: " + ", ".join(
+                    line.split(maxsplit=1)[1] if len(line.split(maxsplit=1)) == 2 else line
+                    for line in tracked_status.splitlines()[:8]
+                ),
+            ),
+            (
+                "PASS",
+                f"post-acceptance drift gate excludes {len(untracked)} untracked path(s)",
+            ),
+        ]
+        anchor_key = "rollback_commit" if state.get("status") in {"ROLLED_BACK", "CODE_REVERTED_EXTERNAL_PENDING"} else "merge_commit"
+        anchor = str(state.get(anchor_key) or "")
+        if not anchor:
+            checks.append(("FAIL", f"post-acceptance drift gate has no recorded {anchor_key}"))
+            return checks
+        commit_code, _ = run(["git", "-C", str(repo), "cat-file", "-e", f"{anchor}^{{commit}}"], repo, timeout=30)
+        if commit_code:
+            checks.append(("FAIL", f"post-acceptance recorded {anchor_key} does not exist: {anchor}"))
+            return checks
+        ancestor_code, _ = run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", anchor, base_branch],
+            repo,
+            timeout=30,
+        )
+        checks.append((
+            "PASS" if ancestor_code == 0 else "FAIL",
+            f"post-acceptance recorded {anchor_key} is an ancestor of {base_branch}",
+        ))
+        return checks
+    except (OSError, ValueError, KeyError) as error:
+        return [("FAIL", f"post-acceptance drift gate: {error}")]
+
+
 def package_path(root: Path, package_id: str) -> Path:
     return os_dir(root) / "work-packages" / f"{package_id}.json"
 
@@ -2693,6 +2753,9 @@ def cmd_merge(args: argparse.Namespace) -> int:
     code, remove_output = call_agent_shift(root, "worktree-remove", str(root), "--work-unit", unit_id)
     if code:
         raise ValueError(remove_output)
+    drift_failures = [message for level, message in post_acceptance_git_checks(root) if level == "FAIL"]
+    if drift_failures:
+        raise ValueError("post-acceptance drift gate failed: " + "; ".join(drift_failures))
     post_merge_outcome = int(contract.get("schema_revision", 1)) >= 4 and level in {"L1", "L2"}
     run_status = "OUTCOME_PENDING" if post_merge_outcome else "MERGED"
     outcome_status = "OUTCOME_PENDING" if post_merge_outcome else ("NOT_REQUIRED" if level == "L0" else "LEGACY")
@@ -2876,6 +2939,41 @@ def cmd_lock_release(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run_cancel(args: argparse.Namespace) -> int:
+    """Close an orphaned failed Run without deleting or hiding dirty work."""
+    root = root_path(args.project)
+    cancellable = {"LOCK_EXPIRED", "RUNTIME_FAILED", "BLOCKED_DECISION", "EVIDENCE_INCOMPLETE"}
+    with db_connect(root) as db:
+        row = active_run(db, args.run)
+        if row["status"] not in cancellable:
+            raise ValueError("run-cancel requires an inactive failed or blocked Run")
+        if db.execute("SELECT 1 FROM locks WHERE run_id=?", (args.run,)).fetchone():
+            raise ValueError("run-cancel requires no writer lock")
+        shift_state = read_json(root / ".agent-shift" / "state.json")
+        if shift_state.get("handoff_id") == args.run:
+            raise ValueError("run-cancel refuses the current Agent Shift handoff; reconcile ownership first")
+        worktree = Path(str(row["worktree"]))
+        if worktree.is_dir() and git(worktree, "status", "--porcelain"):
+            raise ValueError("run-cancel refuses a dirty worktree")
+        timestamp = now_iso()
+        db.execute("UPDATE runs SET status='CANCELLED', ended_at=? WHERE id=?", (timestamp, args.run))
+        db.execute(
+            "UPDATE work_packages SET status='CANCELLED', updated_at=? WHERE id=?",
+            (timestamp, row["package_id"]),
+        )
+    append_event(root, args.run, "codex", "run_cancelled", args.reason, worktree_preserved=worktree.is_dir())
+    write_run_economics(root, args.run)
+    print(json.dumps({
+        "run": args.run,
+        "package": row["package_id"],
+        "status": "CANCELLED",
+        "reason": args.reason,
+        "worktree": str(worktree),
+        "worktree_preserved": worktree.is_dir(),
+    }, ensure_ascii=False, indent=2))
+    return 0
+
+
 def cmd_runtime_recover(args: argparse.Namespace) -> int:
     """Restore the same Run and worktree after a runtime or lock failure."""
     root = root_path(args.project)
@@ -3007,6 +3105,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         checks.append(("FAIL", f"state database: {error}"))
     code, output = call_agent_shift(root, "doctor", str(root))
     checks.append(("PASS" if code == 0 else "FAIL", "Agent Shift doctor"))
+    checks.extend(post_acceptance_git_checks(root))
     for level, message in checks:
         print(f"{level:4} {message}")
     failures = sum(level == "FAIL" for level, _ in checks)
@@ -3124,6 +3223,7 @@ def parser() -> argparse.ArgumentParser:
     economics = sub.add_parser("economics"); economics.add_argument("project"); economics.add_argument("--run", required=True); economics.set_defaults(func=cmd_economics)
     rollback = sub.add_parser("rollback"); rollback.add_argument("project"); rollback.add_argument("--run", required=True); rollback.add_argument("--reason", required=True); rollback.add_argument("--execute", action="store_true"); rollback.add_argument("--ack-external", action="store_true"); rollback.set_defaults(func=cmd_rollback)
     release = sub.add_parser("lock-release"); release.add_argument("project"); release.add_argument("--work-unit", required=True); release.add_argument("--reason", required=True); release.set_defaults(func=cmd_lock_release)
+    cancel = sub.add_parser("run-cancel"); cancel.add_argument("project"); cancel.add_argument("--run", required=True); cancel.add_argument("--reason", required=True); cancel.set_defaults(func=cmd_run_cancel)
     runtime_recover = sub.add_parser("runtime-recover"); runtime_recover.add_argument("project"); runtime_recover.add_argument("--run", required=True); runtime_recover.add_argument("--reason", required=True); runtime_recover.set_defaults(func=cmd_runtime_recover)
     recover = sub.add_parser("recover"); recover.add_argument("project"); recover.set_defaults(func=cmd_recover)
     status = sub.add_parser("status"); status.add_argument("project"); status.set_defaults(func=cmd_status)
