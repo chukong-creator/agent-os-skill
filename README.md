@@ -421,7 +421,12 @@ flowchart LR
 - 明确 quota、429、余额不足或 Provider 终态错误，才进入有限 fallback 链。
 - 每个 profile 在一个角色周期内最多尝试一次；链耗尽后进入 `RUNTIME_FAILED`。
 - 未知错误不会盲目切模型。
-- Builder 连续 5 分钟、Reviewer 连续 15 分钟没有 job update 时标记 `SUSPECTED_STALL`，但不会在旧 writer 仍活跃时启动第二个 writer。
+- `agent-os claude-start` 对继承的当前模型以及显式选择的 GLM、DeepSeek、Kimi、Anthropic 等 profile 使用同一执行契约；模型切换不改变 Work Package、路径权限、worktree、验证和验收。
+- Builder 连续 5 分钟无 job update 时标记 `SUSPECTED_STALL`，15 分钟时标记 `UNRESPONSIVE`；Reviewer 默认为 15/30 分钟。活动恢复会自动清除告警并留下事件。权限等待不计作停滞。
+- `UNRESPONSIVE` 会及时暴露真实无响应，但不会在旧 writer 仍存在时启动第二个 writer；必须先确认终止或显式停止旧会话，再恢复或接管。
+- 受治理任务不要直接运行 `claude -p` 或 `claude --background`。默认 text 模式的 stdout 沉默不是进度证据，也会绕过 Run 监督。
+- `claude-status` 分开报告运行健康和 Git 实现证据：活跃但尚无 diff/commit 为 `ACTIVE_NO_IMPLEMENTATION_EVIDENCE`，出现代码证据为 `ACTIVE_IMPLEMENTING`，会话消失但保留局部改动为 `ORPHANED_PARTIAL_WORK`。`single_writer_preserved` 来自 worktree 的实时会话计数，不再是固定声明。
+- Agent Shift doctor 会检查记录的 Agent worktree；实现中但没有活跃 Claude、同一 worktree 有多个会话，或 Codex 子代理被误记为 Claude，都会失败并保留现场供恢复。
 
 ## 高风险 Agent 必须回答的五个问题
 

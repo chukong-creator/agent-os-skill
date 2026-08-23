@@ -81,6 +81,12 @@ run-start -> claude-start -> verify -> verifier
 review -> rework-start or merge -> outcome-check for L1/L2
 ```
 
+For governed Claude implementation, always launch through `agent-os
+claude-start`; do not substitute raw `claude -p` or `claude --background`.
+Inherited settings and explicit GLM, DeepSeek, Kimi, Anthropic, or other
+profiles share the same supervision and delivery contract; explicit profiles
+also support finite provider fallback.
+
 Choose the lightest honest level:
 
 - `L0`: local, reversible governed work with no risk factors or external effect.
@@ -109,6 +115,15 @@ Only explicit provider or quota terminal failures advance through a finite,
 unique fallback chain. Permission waits keep the same writer. Unknown failures,
 manual stops, suspected stalls, repeated profiles, and exhausted chains never
 start a second writer or loop indefinitely.
+
+Treat `SUSPECTED_STALL` as the early inactivity warning and `UNRESPONSIVE` as
+the hard no-activity alert. A later Claude job update returns supervision to
+responsive. Neither state permits takeover until the old writer is explicitly
+stopped or terminal.
+
+Use `claude-status` to separate health from Git evidence: active without changes is
+`ACTIVE_NO_IMPLEMENTATION_EVIDENCE`, never provider failure or proof of reasoning;
+changes mean `ACTIVE_IMPLEMENTING`, while missing sessions with Git evidence mean `ORPHANED_PARTIAL_WORK` requiring same-worktree recovery.
 
 ## Recover without inventing success
 

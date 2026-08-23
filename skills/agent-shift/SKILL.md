@@ -9,6 +9,8 @@ Run Codex and Claude Code as a governed delivery team on a Git control plane. Ke
 
 When `.agent-os/project.json` exists, use the `$agent-os` Work Package, lock, evidence, Verifier, and Review gates above this Git transport. Agent Shift must not accept a commit that differs from the exact gated branch commit.
 
+When Agent OS owns the delivery, launch Claude only through `agent-os claude-start`. Do not bypass its provider-neutral supervision with raw `claude -p` or `claude --background`; model routing may change the provider but never the handoff contract or single-writer boundary.
+
 ## Start with project truth
 
 1. Read the nearest `AGENTS.md`, `CLAUDE.md`, and `.agent-shift/project.json`.
@@ -20,6 +22,11 @@ agent-shift doctor <project-root>
 
 3. Treat missing Git HEAD, baseline records, or protocol mismatches as blockers. Treat warnings as explicit risk, not proof of readiness.
 4. Use `.agent-shift/state.json` as runtime truth. Treat collaboration retrospectives as history, not live state.
+
+For active `CLAUDE_IMPLEMENTING` or `CLAUDE_REWORK` states, doctor checks the
+recorded worktree itself. Zero live Claude sessions, multiple live sessions, or
+a `codex-subagent` branch recorded as Claude-owned fail diagnosis. Dirty partial
+work is preserved and reported for recovery; doctor never removes it.
 
 For detailed roles, transitions, delegation rules, and escalation policy, read [references/protocol.md](references/protocol.md).
 

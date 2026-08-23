@@ -71,8 +71,10 @@ RETRYABLE_RUNTIME_PATTERNS = (
     "token exhausted", "tokens exhausted", "resource exhausted", "resource_exhausted",
     "overloaded_error", "provider capacity exhausted", "http 402", "http 429", "status 402", "status 429",
     "status code 402", "status code 429", "connection reset by provider", "provider connection refused",
+    "connectionrefused", "unable to connect to api", "api connection refused", "socket hang up",
     "provider service unavailable", "provider bad gateway", "provider gateway timeout",
     "http 502", "http 503", "http 504", "authentication_error", "invalid api key",
+    "model does not exist", "model not found", "unknown model", "unsupported model", "模型不存在",
 )
 NON_RETRYABLE_RUNTIME_PATTERNS = (
     "working directory no longer exists", "worktree does not exist", "permission denied",
@@ -617,6 +619,192 @@ def safe_agent_status(agent: dict[str, Any]) -> tuple[str, datetime | None]:
     return detail, activity_at
 
 
+def safe_agent_runtime_metadata(
+    agent: dict[str, Any], jobs_root: Path | None = None,
+) -> dict[str, str]:
+    identifier = str(agent.get("id") or "")
+    if not identifier or len(identifier) > 16:
+        return {}
+    job = (jobs_root or Path("~/.claude/jobs").expanduser()) / identifier / "state.json"
+    if not job.is_file():
+        return {}
+    try:
+        value = read_json(job)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    provider_env = value.get("providerEnv")
+    if not isinstance(provider_env, dict):
+        return {}
+    model = next(
+        (
+            str(provider_env.get(key))
+            for key in (
+                "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
+                "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+            )
+            if isinstance(provider_env.get(key), str) and provider_env.get(key)
+        ),
+        None,
+    )
+    return {"model": model} if model else {}
+
+
+def supervision_health(
+    state: str | None, detail: str | None, inactive_seconds: float,
+    suspected_stall_seconds: int, unresponsive_seconds: int,
+) -> str:
+    normalized_state = (state or "unknown").strip().lower().replace("-", "_").replace(" ", "_")
+    if permission_wait_status(normalized_state, detail):
+        return "WAITING_FOR_PERMISSION"
+    if normalized_state in {"done", "completed", "succeeded"}:
+        return "COMPLETED"
+    if normalized_state in {"failed"}:
+        return "FAILED"
+    if normalized_state in {"stopped", "cancelled", "canceled", "interrupted"}:
+        return "STOPPED"
+    if inactive_seconds >= unresponsive_seconds:
+        return "UNRESPONSIVE"
+    if inactive_seconds >= suspected_stall_seconds:
+        return "SUSPECTED_STALL"
+    return "RESPONSIVE"
+
+
+def worktree_implementation_evidence(worktree: Path, baseline_commit: str | None) -> dict[str, Any]:
+    """Report Git implementation evidence without treating silence as failure."""
+    result: dict[str, Any] = {
+        "git_available": False,
+        "baseline_commit": baseline_commit or None,
+        "head_commit": None,
+        "branch": None,
+        "commits_ahead": None,
+        "changed_path_count": None,
+        "worktree_dirty": None,
+        "implementation_started": False,
+    }
+    if not worktree.is_dir():
+        result["diagnostic"] = "worktree_missing"
+        return result
+    head_code, head = run(["git", "rev-parse", "HEAD"], worktree, timeout=30)
+    branch_code, branch = run(["git", "branch", "--show-current"], worktree, timeout=30)
+    status_code, status = run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        worktree,
+        timeout=30,
+    )
+    if head_code or status_code:
+        result["diagnostic"] = "git_status_unavailable"
+        return result
+    changed_path_count = len([line for line in status.splitlines() if line])
+    commits_ahead: int | None = None
+    if baseline_commit:
+        count_code, count = run(
+            ["git", "rev-list", "--count", f"{baseline_commit}..{head}"],
+            worktree,
+            timeout=30,
+        )
+        if count_code == 0:
+            try:
+                commits_ahead = int(count)
+            except ValueError:
+                commits_ahead = None
+    result.update({
+        "git_available": True,
+        "head_commit": head or None,
+        "branch": branch if branch_code == 0 and branch else None,
+        "commits_ahead": commits_ahead,
+        "changed_path_count": changed_path_count,
+        "worktree_dirty": changed_path_count > 0,
+        "implementation_started": changed_path_count > 0 or bool(commits_ahead),
+    })
+    return result
+
+
+def execution_classification(
+    health: str,
+    detail: str | None,
+    evidence: dict[str, Any],
+    supervisor_status: str | None = None,
+    terminal_category: str | None = None,
+) -> dict[str, str | None]:
+    """Separate provider health from observable implementation progress."""
+    implementation_started = bool(evidence.get("implementation_started"))
+    if supervisor_status == "RUNTIME_FAILED":
+        category = terminal_category or "runtime_unknown"
+        classification = "PROVIDER_FAILED" if category.startswith("provider_or_quota") else "RUNTIME_FAILED"
+        return {
+            "classification": classification,
+            "reason": f"Supervisor recorded terminal runtime category {category}.",
+            "failure_category": category,
+        }
+    if health == "FAILED":
+        category = classify_runtime_failure(detail)
+        classification = "PROVIDER_FAILED" if category == "provider_or_quota" else "RUNTIME_FAILED"
+        return {
+            "classification": classification,
+            "reason": "Claude reported a terminal failed state; the detail was classified before any fallback decision.",
+            "failure_category": category,
+        }
+    if health == "WAITING_FOR_PERMISSION":
+        return {
+            "classification": "WAITING_FOR_PERMISSION",
+            "reason": "Claude is blocked on a permission decision; provider fallback is suppressed.",
+            "failure_category": None,
+        }
+    if health == "SUSPECTED_STALL":
+        return {
+            "classification": "SUSPECTED_STALL",
+            "reason": "The session still exists but has not emitted job activity through the warning threshold.",
+            "failure_category": None,
+        }
+    if health == "UNRESPONSIVE":
+        return {
+            "classification": "UNRESPONSIVE",
+            "reason": "The session still exists but has not emitted job activity through the hard threshold.",
+            "failure_category": None,
+        }
+    if health == "COMPLETED":
+        return {
+            "classification": "COMPLETED_WITH_EVIDENCE" if implementation_started else "COMPLETED_NO_IMPLEMENTATION_EVIDENCE",
+            "reason": "Claude completed and Git evidence is present." if implementation_started else "Claude completed without a branch commit or worktree change.",
+            "failure_category": None,
+        }
+    if health == "STOPPED":
+        return {
+            "classification": "STOPPED_WITH_PARTIAL_WORK" if implementation_started else "STOPPED",
+            "reason": "The session stopped; partial Git evidence remains." if implementation_started else "The session stopped without implementation evidence.",
+            "failure_category": None,
+        }
+    if health == "NOT_DISCOVERED":
+        if implementation_started:
+            return {
+                "classification": "ORPHANED_PARTIAL_WORK",
+                "reason": "No matching Claude session is discoverable, but the worktree contains implementation evidence.",
+                "failure_category": None,
+            }
+        if supervisor_status in {"STARTING", "STARTED"}:
+            return {
+                "classification": "STARTING",
+                "reason": "The launch is recorded and the background session is still within discovery.",
+                "failure_category": None,
+            }
+        return {
+            "classification": "NOT_DISCOVERED",
+            "reason": "No matching Claude session or implementation evidence is observable.",
+            "failure_category": None,
+        }
+    if health == "RESPONSIVE":
+        return {
+            "classification": "ACTIVE_IMPLEMENTING" if implementation_started else "ACTIVE_NO_IMPLEMENTATION_EVIDENCE",
+            "reason": "Claude is active and Git implementation evidence is present." if implementation_started else "Claude is active, but no branch commit or worktree change is observable yet; this may be reasoning, planning, or tool preparation.",
+            "failure_category": None,
+        }
+    return {
+        "classification": "RUNTIME_UNKNOWN",
+        "reason": f"Unsupported health state: {health}.",
+        "failure_category": "runtime_unknown",
+    }
+
+
 def runtime_failure_fields(category: str) -> tuple[str, str, str]:
     if category == "runtime_unknown":
         return (
@@ -654,14 +842,18 @@ def mark_runtime_failed(root: Path, run_id: str, category: str) -> None:
     append_event(root, run_id, "system", "routing_failed", "Finite model fallback could not continue", category=category)
 
 
-def start_route_supervisor(root: Path, run_id: str, profile: str, config_path: Path) -> int:
+def start_route_supervisor(
+    root: Path, run_id: str, profile: str, config_path: Path | None, mode: str,
+) -> int:
     runtime = run_dir(root, run_id) / "runtime"
     runtime.mkdir(parents=True, exist_ok=True)
     log_path = runtime / "route-supervisor.log"
     command = [
         sys.executable, str(Path(__file__).resolve()), "claude-watch", str(root), "--run", run_id,
-        "--profile", profile, "--routing-config", str(config_path),
+        "--profile", profile, "--mode", mode,
     ]
+    if config_path is not None:
+        command.extend(["--routing-config", str(config_path)])
     with log_path.open("ab") as log:
         process = subprocess.Popen(
             command, cwd=root, stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
@@ -1712,13 +1904,21 @@ def cmd_route_resolve(args: argparse.Namespace) -> int:
 
 def cmd_claude_watch(args: argparse.Namespace) -> int:
     root = root_path(args.project)
-    config_path = Path(args.routing_config).expanduser().resolve() if args.routing_config else default_routing_config_path()
-    route, _ = resolve_execution_profile(args.profile, config_path)
-    if route is None:
-        raise ValueError("claude-watch requires a routed execution profile")
-    mode = str(route.get("mode", "builder"))
-    chain = fallback_chain(config_path, mode, str(route["profile"]))
-    current_profile = str(route["profile"])
+    config_path = Path(args.routing_config).expanduser().resolve() if args.routing_config else None
+    if args.profile == "inherit":
+        route = None
+        mode = args.mode
+        chain = ["inherit"]
+        current_profile = "inherit"
+    else:
+        resolved_config = config_path or default_routing_config_path()
+        route, _ = resolve_execution_profile(args.profile, resolved_config)
+        if route is None:
+            raise ValueError("claude-watch requires a routed profile or inherit")
+        config_path = resolved_config
+        mode = str(route.get("mode", "builder"))
+        chain = fallback_chain(config_path, mode, str(route["profile"]))
+        current_profile = str(route["profile"])
     executable = shutil.which("claude")
     if not executable:
         mark_runtime_failed(root, args.run, "claude_executable_missing")
@@ -1726,15 +1926,26 @@ def cmd_claude_watch(args: argparse.Namespace) -> int:
     with db_connect(root) as db:
         row = active_run(db, args.run)
     worktree = Path(str(row["worktree"]))
-    config = load_routing_config(config_path)
+    config = load_routing_config(config_path) if config_path is not None else {}
     supervision = config.get("supervision", {}) if isinstance(config.get("supervision", {}), dict) else {}
     poll_seconds = max(2, min(int(supervision.get("poll_seconds", 10)), 60))
     discovery_deadline = time.monotonic() + max(30, int(supervision.get("discovery_timeout_seconds", 90)))
     stall_key = "builder_suspected_stall_seconds" if mode == "builder" else "reviewer_suspected_stall_seconds"
     stall_seconds = max(60, int(supervision.get(stall_key, 300 if mode == "builder" else 900)))
+    unresponsive_key = "builder_unresponsive_seconds" if mode == "builder" else "reviewer_unresponsive_seconds"
+    unresponsive_seconds = max(
+        stall_seconds + poll_seconds,
+        int(supervision.get(unresponsive_key, 900 if mode == "builder" else 1800)),
+    )
     watch_started = time.monotonic()
     stall_reported = False
-    update_routing_state(root, args.run, status="SUPERVISING", mode=mode, chain=chain, active_profile=current_profile)
+    unresponsive_reported = False
+    last_activity_at: datetime | None = None
+    update_routing_state(
+        root, args.run, status="SUPERVISING", mode=mode, chain=chain,
+        active_profile=current_profile, suspected_stall_seconds=stall_seconds,
+        unresponsive_seconds=unresponsive_seconds,
+    )
     while True:
         name = f"agent-os-{args.run}-{current_profile}"
         activity_at: datetime | None = None
@@ -1796,16 +2007,56 @@ def cmd_claude_watch(args: argparse.Namespace) -> int:
                     "Permission wait ended; supervision continues with the same writer",
                     profile=current_profile,
                 )
+                watch_started = time.monotonic()
+                last_activity_at = activity_at
+                stall_reported = False
+                unresponsive_reported = False
+            if activity_at is not None and (last_activity_at is None or activity_at > last_activity_at):
+                if stall_reported or unresponsive_reported or state.get("status") in {"SUSPECTED_STALL", "UNRESPONSIVE"}:
+                    update_routing_state(
+                        root, args.run, status="SUPERVISING", active_profile=current_profile,
+                        activity_resumed_at=now_iso(), last_activity_at=activity_at.isoformat(),
+                        observed_inactivity_seconds=0,
+                    )
+                    append_event(
+                        root, args.run, "system", "routing_activity_resumed",
+                        "Claude emitted new job activity; supervision returned to responsive",
+                        profile=current_profile,
+                    )
+                last_activity_at = activity_at
+                stall_reported = False
+                unresponsive_reported = False
             inactive_seconds = (
                 max(0.0, (now() - activity_at).total_seconds())
                 if activity_at is not None else time.monotonic() - watch_started
             )
-            if not stall_reported and inactive_seconds >= stall_seconds:
+            health = supervision_health(
+                str(decision.get("state", "")), detail, inactive_seconds,
+                stall_seconds, unresponsive_seconds,
+            )
+            if health == "UNRESPONSIVE" and not unresponsive_reported:
+                unresponsive_reported = True
+                stall_reported = True
+                update_routing_state(
+                    root, args.run, status="UNRESPONSIVE", active_profile=current_profile,
+                    unresponsive_at=now_iso(), suspected_stall_seconds=stall_seconds,
+                    unresponsive_seconds=unresponsive_seconds,
+                    observed_inactivity_seconds=int(inactive_seconds),
+                    last_activity_at=activity_at.isoformat() if activity_at else None,
+                )
+                append_event(
+                    root, args.run, "system", "routing_unresponsive",
+                    "Claude remains active but has produced no job activity through the hard response threshold; manual stop or diagnosis is required before takeover",
+                    profile=current_profile, threshold_seconds=unresponsive_seconds,
+                    single_writer_preserved=True,
+                )
+            elif health == "SUSPECTED_STALL" and not stall_reported:
                 stall_reported = True
                 update_routing_state(
                     root, args.run, status="SUSPECTED_STALL", active_profile=current_profile,
                     suspected_stall_at=now_iso(), suspected_stall_seconds=stall_seconds,
                     observed_inactivity_seconds=int(inactive_seconds),
+                    last_activity_at=activity_at.isoformat() if activity_at else None,
                 )
                 append_event(
                     root, args.run, "system", "routing_suspected_stall",
@@ -1853,6 +2104,8 @@ def cmd_claude_watch(args: argparse.Namespace) -> int:
         discovery_deadline = time.monotonic() + max(30, int(supervision.get("discovery_timeout_seconds", 90)))
         watch_started = time.monotonic()
         stall_reported = False
+        unresponsive_reported = False
+        last_activity_at = None
         update_routing_state(root, args.run, status="SUPERVISING", active_profile=current_profile, next_profile=None)
 
 
@@ -1864,6 +2117,7 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
     config_path = Path(args.routing_config).expanduser().resolve() if args.routing_config else None
     route, provider_env = resolve_execution_profile(args.profile or automatic_profile, config_path)
     mode = str(route.get("mode", "builder")) if route else "builder"
+    profile_name = str(route["profile"]) if route else "inherit"
     if mode not in {"builder", "reviewer"}:
         raise ValueError(f"unsupported execution profile mode: {mode}")
     allowed_statuses = {"BUILDING", "REWORK"} if mode == "builder" else {"READY_FOR_REVIEW", "CODEX_REVIEWING"}
@@ -1888,7 +2142,7 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
         permission_mode = "dontAsk"
         prompt = claude_reviewer_prompt(root, row)
     command = [
-        executable, "--background", "--name", f"agent-os-{args.run}-{route['profile'] if route else 'inherit'}",
+        executable, "--background", "--name", f"agent-os-{args.run}-{profile_name}",
         "--add-dir", *sorted(readable_dirs),
         "--allowedTools", *allowed_tools,
         "--permission-mode", permission_mode,
@@ -1899,7 +2153,7 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
         command.extend(["--effort", str(route["effort"])])
     command.append(prompt)
     safe_launch = {
-        "run": args.run, "mode": mode, "profile": route.get("profile") if route else "inherit",
+        "run": args.run, "mode": mode, "profile": profile_name,
         "provider": route.get("provider") if route else None,
         "provider_id": route.get("provider_id") if route else None,
         "model": route.get("model") if route else None,
@@ -1915,38 +2169,42 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
     failure_category = "runtime_unknown"
     with claude_launch_mutex(root, worktree):
         route_state = read_json(routing_state_path(root, args.run)) if routing_state_path(root, args.run).is_file() else {}
-        if route:
-            validate_routing_launch_authorization(route_state, mode, str(route["profile"]), args.no_supervisor)
+        validate_routing_launch_authorization(route_state, mode, profile_name, args.no_supervisor)
         active_agents = active_routed_agents(executable, worktree, args.run)
         if active_agents:
             names = sorted({str(item.get("name")) for item in active_agents})
             raise ValueError(f"an Agent OS Claude session is already active for this Run: {', '.join(names)}")
-        if route:
-            new_role_cycle = not route_state or route_state.get("mode") != mode or route_state.get("status") == "REWORK_READY"
-            attempts = [] if new_role_cycle else list(route_state.get("attempts", []))
-            attempted_profiles = {str(item.get("profile")) for item in attempts if isinstance(item, dict)}
-            chain = fallback_chain(Path(str(route["routing_config"])), mode, str(route["profile"]))
-            if str(route["profile"]) in attempted_profiles or len(attempts) >= len(chain):
-                raise ValueError("finite routing attempt limit reached; refusing to repeat a provider profile")
-            attempts.append({
-                "profile": route["profile"], "provider": route["provider"], "provider_id": route["provider_id"],
-                "model": route["model"], "effort": route["effort"], "started_at": now_iso(), "outcome": "STARTING",
-            })
-            update_routing_state(
-                root, args.run, status="STARTING", mode=mode, active_profile=str(route["profile"]),
-                chain=chain, attempts=attempts,
-            )
+        new_role_cycle = (
+            not route_state or route_state.get("mode") != mode
+            or route_state.get("status") in {"REWORK_READY", "RUNTIME_RECOVERY_READY"}
+        )
+        attempts = [] if new_role_cycle else list(route_state.get("attempts", []))
+        attempted_profiles = {str(item.get("profile")) for item in attempts if isinstance(item, dict)}
+        chain = fallback_chain(Path(str(route["routing_config"])), mode, profile_name) if route else ["inherit"]
+        if profile_name in attempted_profiles or len(attempts) >= len(chain):
+            raise ValueError("finite routing attempt limit reached; refusing to repeat a provider profile")
+        attempts.append({
+            "profile": profile_name,
+            "provider": route.get("provider") if route else None,
+            "provider_id": route.get("provider_id") if route else None,
+            "model": route.get("model") if route else None,
+            "effort": route.get("effort") if route else None,
+            "started_at": now_iso(), "outcome": "STARTING",
+        })
+        update_routing_state(
+            root, args.run, status="STARTING", mode=mode, active_profile=profile_name,
+            chain=chain, attempts=attempts,
+        )
         code, output = run(command, worktree, timeout=60, env=provider_child_environment(provider_env))
         launch_failed = code != 0
         if launch_failed:
             failure_category = classify_runtime_failure(output)
-            if route:
-                attempts[-1]["outcome"] = "LAUNCH_FAILED"
-                attempts[-1]["ended_at"] = now_iso()
-                update_routing_state(
-                    root, args.run, status="LAUNCH_FAILED", active_profile=str(route["profile"]),
-                    attempts=attempts, last_launch_failure_category=failure_category,
-                )
+            attempts[-1]["outcome"] = "LAUNCH_FAILED"
+            attempts[-1]["ended_at"] = now_iso()
+            update_routing_state(
+                root, args.run, status="LAUNCH_FAILED", active_profile=profile_name,
+                attempts=attempts, last_launch_failure_category=failure_category,
+            )
             append_event(
                 root, args.run, "system", "claude_launch_failed", "Claude background start failed",
                 profile=safe_launch["profile"], provider=safe_launch["provider"], category=failure_category,
@@ -1957,16 +2215,20 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
                 profile=safe_launch["profile"], provider=safe_launch["provider"],
                 model=safe_launch["model"], effort=safe_launch["effort"], credential_source=safe_launch["credential_source"],
             )
-            if route:
-                attempts[-1]["outcome"] = "STARTED"
-                update_routing_state(root, args.run, status="STARTED", attempts=attempts)
+            attempts[-1]["outcome"] = "STARTED"
+            update_routing_state(root, args.run, status="STARTED", attempts=attempts)
+    if launch_failed and not route:
+        mark_runtime_failed(root, args.run, failure_category)
     if launch_failed and (not route or failure_category != "provider_or_quota" or args.no_supervisor):
         raise ValueError(f"Claude background start failed (category={failure_category})")
-    if route and not args.no_supervisor:
-        supervisor_pid = start_route_supervisor(root, args.run, str(route["profile"]), Path(str(route["routing_config"])))
+    if not args.no_supervisor:
+        supervisor_pid = start_route_supervisor(
+            root, args.run, profile_name,
+            Path(str(route["routing_config"])) if route else None, mode,
+        )
         append_event(
             root, args.run, "system", "routing_supervisor_started", "Finite model fallback supervisor started",
-            pid=supervisor_pid, profile=route["profile"], recovering_launch_failure=launch_failed,
+            pid=supervisor_pid, profile=profile_name, recovering_launch_failure=launch_failed,
         )
     result = "RECOVERY_STARTED" if launch_failed else "STARTED"
     print(json.dumps(safe_launch | {"result": result}, ensure_ascii=False, indent=2))
@@ -1980,10 +2242,63 @@ def cmd_claude_status(args: argparse.Namespace) -> int:
     executable = shutil.which("claude")
     if not executable:
         raise FileNotFoundError("claude executable not found")
-    code, output = run([executable, "agents", "--json", "--all", "--cwd", str(row["worktree"])], Path(str(row["worktree"])), timeout=30)
+    worktree = Path(str(row["worktree"]))
+    code, output = run([executable, "agents", "--json", "--all", "--cwd", str(worktree)], worktree, timeout=30)
     if code:
         raise ValueError(f"Claude Agent status failed: {output}")
-    print(output or "[]")
+    try:
+        agents = json.loads(output or "[]")
+    except json.JSONDecodeError as error:
+        raise ValueError("Claude Agent status returned invalid JSON") from error
+    if not isinstance(agents, list):
+        raise ValueError("Claude Agent status returned an invalid payload")
+    route_state = read_json(routing_state_path(root, args.run)) if routing_state_path(root, args.run).is_file() else {}
+    profile = str(route_state.get("active_profile") or "inherit")
+    name = f"agent-os-{args.run}-{profile}"
+    matches = [item for item in agents if isinstance(item, dict) and item.get("name") == name]
+    agent = max(matches, key=lambda item: int(item.get("startedAt") or 0)) if matches else None
+    detail, activity_at = safe_agent_status(agent) if agent else ("", None)
+    runtime_metadata = safe_agent_runtime_metadata(agent) if agent else {}
+    inactive_seconds = max(0.0, (now() - activity_at).total_seconds()) if activity_at else None
+    suspected_seconds = int(route_state.get("suspected_stall_seconds") or 300)
+    unresponsive_seconds = int(route_state.get("unresponsive_seconds") or 900)
+    health = (
+        supervision_health(str(agent.get("state") or "unknown"), detail, inactive_seconds or 0.0, suspected_seconds, unresponsive_seconds)
+        if agent else "NOT_DISCOVERED"
+    )
+    evidence = worktree_implementation_evidence(worktree, str(row["baseline_commit"] or "") or None)
+    execution = execution_classification(
+        health,
+        detail,
+        evidence,
+        str(route_state.get("status") or "") or None,
+        str(route_state.get("terminal_category") or "") or None,
+    )
+    terminal_states = {"done", "completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "interrupted"}
+    active_worktree_agents = [
+        item for item in agents
+        if isinstance(item, dict)
+        and str(item.get("state") or "unknown").strip().lower() not in terminal_states
+    ]
+    public_agent = None if agent is None else {
+        "id": agent.get("id"), "name": agent.get("name"), "state": agent.get("state"),
+        "detail": detail or None, "started_at": agent.get("startedAt"),
+        "last_activity_at": activity_at.isoformat() if activity_at else None,
+    }
+    print(json.dumps({
+        "run": args.run, "run_status": row["status"], "supervisor_status": route_state.get("status"),
+        "health": health, "profile": profile,
+        "provider": next((item.get("provider") for item in reversed(route_state.get("attempts", [])) if isinstance(item, dict) and item.get("profile") == profile), None),
+        "model": next((item.get("model") for item in reversed(route_state.get("attempts", [])) if isinstance(item, dict) and item.get("profile") == profile and item.get("model")), None) or runtime_metadata.get("model"),
+        "inactive_seconds": int(inactive_seconds) if inactive_seconds is not None else None,
+        "suspected_stall_seconds": suspected_seconds, "unresponsive_seconds": unresponsive_seconds,
+        "execution": execution,
+        "implementation_evidence": evidence,
+        "matching_agent_count": len(matches),
+        "active_worktree_agent_count": len(active_worktree_agents),
+        "single_writer_preserved": len(active_worktree_agents) <= 1,
+        "agent": public_agent,
+    }, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -3209,7 +3524,7 @@ def parser() -> argparse.ArgumentParser:
     providers = sub.add_parser("provider-list"); providers.add_argument("--database"); providers.set_defaults(func=cmd_provider_list)
     route = sub.add_parser("route-resolve"); route.add_argument("--profile"); route.add_argument("--routing-config"); route.set_defaults(func=cmd_route_resolve)
     claude_start = sub.add_parser("claude-start"); claude_start.add_argument("project"); claude_start.add_argument("--run", required=True); claude_start.add_argument("--profile"); claude_start.add_argument("--routing-config"); claude_start.add_argument("--dry-run", action="store_true"); claude_start.add_argument("--no-supervisor", action="store_true", help=argparse.SUPPRESS); claude_start.set_defaults(func=cmd_claude_start)
-    claude_watch = sub.add_parser("claude-watch"); claude_watch.add_argument("project"); claude_watch.add_argument("--run", required=True); claude_watch.add_argument("--profile", required=True); claude_watch.add_argument("--routing-config"); claude_watch.set_defaults(func=cmd_claude_watch)
+    claude_watch = sub.add_parser("claude-watch"); claude_watch.add_argument("project"); claude_watch.add_argument("--run", required=True); claude_watch.add_argument("--profile", required=True); claude_watch.add_argument("--mode", choices=("builder", "reviewer"), default="builder"); claude_watch.add_argument("--routing-config"); claude_watch.set_defaults(func=cmd_claude_watch)
     claude_status = sub.add_parser("claude-status"); claude_status.add_argument("project"); claude_status.add_argument("--run", required=True); claude_status.set_defaults(func=cmd_claude_status)
     verify = sub.add_parser("verify"); verify.add_argument("project"); verify.add_argument("--run", required=True); verify.set_defaults(func=cmd_verify)
     verifier = sub.add_parser("verifier"); verifier.add_argument("project"); verifier.add_argument("--run", required=True); verifier.add_argument("--actor", default="codex-subagent", choices=("codex", "codex-subagent", "claude-verifier")); verifier.set_defaults(func=cmd_verifier)

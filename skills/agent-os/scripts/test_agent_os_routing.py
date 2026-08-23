@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -183,6 +184,27 @@ class RoutingTests(unittest.TestCase):
         self.assertEqual(decision["action"], "fail")
         self.assertEqual(decision["category"], "runtime_unknown")
 
+    def test_provider_compatibility_failures_are_classified_for_finite_fallback(self) -> None:
+        for detail in (
+            "API Error: Unable to connect to API (ConnectionRefused)",
+            "API Error: 400 模型不存在，请检查模型代码",
+            "HTTP 503 provider service unavailable",
+        ):
+            with self.subTest(detail=detail):
+                self.assertEqual(AGENT_OS.classify_runtime_failure(detail), "provider_or_quota")
+
+    def test_provider_warning_does_not_interrupt_an_active_session(self) -> None:
+        detail = '"glm-5.2" is not a model this version of Claude Code recognizes'
+        decision = AGENT_OS.runtime_recovery_decision(
+            "working", detail, ["builder", "fallback"], "builder",
+        )
+        self.assertEqual(decision, {"action": "wait", "state": "working"})
+        execution = AGENT_OS.execution_classification(
+            "RESPONSIVE", detail, {"implementation_started": False},
+        )
+        self.assertEqual(execution["classification"], "ACTIVE_NO_IMPLEMENTATION_EVIDENCE")
+        self.assertIsNone(execution["failure_category"])
+
     def test_real_claude_nonterminal_states_keep_supervisor_waiting(self) -> None:
         for state in (
             "working", "busy", "idle", "queued", "pending", "waiting",
@@ -287,6 +309,124 @@ class RoutingTests(unittest.TestCase):
         self.assertIsNotNone(iso)
         self.assertIsNotNone(millis)
         self.assertIsNone(AGENT_OS.parse_agent_activity("not-a-time"))
+
+    def test_inherited_runtime_metadata_reports_model_without_credentials(self) -> None:
+        jobs = self.root / "jobs"
+        state = jobs / "abc123" / "state.json"
+        state.parent.mkdir(parents=True)
+        state.write_text(json.dumps({
+            "providerEnv": {
+                "ANTHROPIC_AUTH_TOKEN": "must-not-appear",
+                "ANTHROPIC_BASE_URL": "https://provider.example/anthropic",
+                "ANTHROPIC_MODEL": "deepseek-v4-pro",
+            },
+        }), encoding="utf-8")
+        metadata = AGENT_OS.safe_agent_runtime_metadata({"id": "abc123"}, jobs)
+        self.assertEqual(metadata, {"model": "deepseek-v4-pro"})
+        self.assertNotIn("must-not-appear", json.dumps(metadata))
+        self.assertNotIn("provider.example", json.dumps(metadata))
+
+    def test_supervision_health_distinguishes_stall_unresponsive_and_permission(self) -> None:
+        self.assertEqual(
+            AGENT_OS.supervision_health("working", "reading files", 299, 300, 900),
+            "RESPONSIVE",
+        )
+        self.assertEqual(
+            AGENT_OS.supervision_health("working", "reading files", 300, 300, 900),
+            "SUSPECTED_STALL",
+        )
+        self.assertEqual(
+            AGENT_OS.supervision_health("working", "reading files", 900, 300, 900),
+            "UNRESPONSIVE",
+        )
+        self.assertEqual(
+            AGENT_OS.supervision_health("blocked", "permission prompt", 1200, 300, 900),
+            "WAITING_FOR_PERMISSION",
+        )
+
+    def test_execution_classification_separates_activity_from_implementation(self) -> None:
+        no_progress = {"implementation_started": False}
+        partial = {"implementation_started": True}
+        self.assertEqual(
+            AGENT_OS.execution_classification("RESPONSIVE", "reading", no_progress)["classification"],
+            "ACTIVE_NO_IMPLEMENTATION_EVIDENCE",
+        )
+        self.assertEqual(
+            AGENT_OS.execution_classification("RESPONSIVE", "editing", partial)["classification"],
+            "ACTIVE_IMPLEMENTING",
+        )
+        self.assertEqual(
+            AGENT_OS.execution_classification("NOT_DISCOVERED", None, partial)["classification"],
+            "ORPHANED_PARTIAL_WORK",
+        )
+        provider = AGENT_OS.execution_classification(
+            "FAILED", "HTTP 429 quota exhausted", partial,
+        )
+        self.assertEqual(provider["classification"], "PROVIDER_FAILED")
+        self.assertEqual(provider["failure_category"], "provider_or_quota")
+        permission = AGENT_OS.execution_classification(
+            "WAITING_FOR_PERMISSION", "permission prompt", no_progress,
+        )
+        self.assertEqual(permission["classification"], "WAITING_FOR_PERMISSION")
+
+    def test_worktree_evidence_distinguishes_clean_diff_and_commit(self) -> None:
+        worktree = self.root / "worktree"
+        worktree.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=worktree, check=True)
+        (worktree / "app.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(["git", "add", "app.txt"], cwd=worktree, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Agent OS Tests", "-c", "user.email=agent-os@example.invalid", "commit", "-qm", "base"],
+            cwd=worktree,
+            check=True,
+        )
+        baseline = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=worktree, text=True).strip()
+        clean = AGENT_OS.worktree_implementation_evidence(worktree, baseline)
+        self.assertFalse(clean["implementation_started"])
+        self.assertEqual(clean["changed_path_count"], 0)
+
+        (worktree / "app.txt").write_text("changed\n", encoding="utf-8")
+        dirty = AGENT_OS.worktree_implementation_evidence(worktree, baseline)
+        self.assertTrue(dirty["implementation_started"])
+        self.assertTrue(dirty["worktree_dirty"])
+
+        subprocess.run(["git", "add", "app.txt"], cwd=worktree, check=True)
+        subprocess.run(
+            ["git", "-c", "user.name=Agent OS Tests", "-c", "user.email=agent-os@example.invalid", "commit", "-qm", "change"],
+            cwd=worktree,
+            check=True,
+        )
+        committed = AGENT_OS.worktree_implementation_evidence(worktree, baseline)
+        self.assertTrue(committed["implementation_started"])
+        self.assertFalse(committed["worktree_dirty"])
+        self.assertEqual(committed["commits_ahead"], 1)
+
+    def test_inherit_profile_keeps_a_single_non_fallback_chain(self) -> None:
+        decision = AGENT_OS.runtime_recovery_decision(
+            "failed", "API Error: Unable to connect to API (ConnectionRefused)",
+            ["inherit"], "inherit", ["inherit"],
+        )
+        self.assertEqual(decision["action"], "fail")
+        self.assertEqual(decision["category"], "provider_or_quota_chain_exhausted")
+
+    def test_inherit_supervisor_command_omits_routing_config(self) -> None:
+        process = mock.Mock(pid=4321)
+        run_root = self.root / ".agent-os" / "runs" / "run-inherit"
+        run_root.mkdir(parents=True)
+        with (
+            mock.patch.object(AGENT_OS, "run_dir", return_value=run_root),
+            mock.patch.object(AGENT_OS, "update_routing_state"),
+            mock.patch.object(AGENT_OS.subprocess, "Popen", return_value=process) as popen,
+        ):
+            pid = AGENT_OS.start_route_supervisor(
+                self.root, "run-inherit", "inherit", None, "builder",
+            )
+        self.assertEqual(pid, 4321)
+        command = popen.call_args.args[0]
+        self.assertIn("--profile", command)
+        self.assertIn("inherit", command)
+        self.assertIn("--mode", command)
+        self.assertNotIn("--routing-config", command)
 
     def test_verification_shell_is_portable_and_configurable(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=False):
