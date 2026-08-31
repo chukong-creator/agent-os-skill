@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent OS v0.5 proportional delivery and context control plane."""
+"""Agent OS v0.6 proportional delivery and project-intelligence control plane."""
 
 from __future__ import annotations
 
@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 
-AGENT_OS_VERSION = "0.5"
-SCHEMA_REVISION = 5
+AGENT_OS_VERSION = "0.6"
+SCHEMA_REVISION = 6
 DEFAULT_LOCK_SECONDS = 7200
 DECISIONS = {"ACCEPTED", "CHANGES_REQUESTED", "BLOCKED_DECISION"}
 GOVERNANCE_LEVELS = {"L0", "L1", "L2"}
@@ -35,6 +35,12 @@ L2_RISK_FACTORS = {
     "payment", "irreversible",
 }
 DELIVERY_TARGETS = {"repo", "artifact", "installable", "live"}
+WORK_TYPES = {"feature", "bugfix", "maintenance", "refactor", "research", "release"}
+KNOWLEDGE_DISPOSITIONS = {"test", "rule", "skill", "adr", "none"}
+MAINTENANCE_CATEGORIES = {
+    "dependency", "permission", "background-work", "setting-or-flag",
+    "persisted-state", "external-service",
+}
 FAILURE_CATEGORIES = {
     "goal_contract", "context", "permission", "implementation", "verification",
     "dependency", "runtime", "merge", "external_service", "governance", "unknown",
@@ -998,6 +1004,10 @@ def init_db(root: Path, allow_migration: bool = False) -> None:
             CREATE TABLE IF NOT EXISTS outcomes(
               run_id TEXT PRIMARY KEY, status TEXT NOT NULL, path TEXT NOT NULL,
               recorded_at TEXT NOT NULL, FOREIGN KEY(run_id) REFERENCES runs(id));
+            CREATE TABLE IF NOT EXISTS knowledge_assessments(
+              run_id TEXT PRIMARY KEY, disposition TEXT NOT NULL, path TEXT NOT NULL,
+              branch_commit TEXT NOT NULL, recorded_at TEXT NOT NULL,
+              FOREIGN KEY(run_id) REFERENCES runs(id));
             CREATE TABLE IF NOT EXISTS schema_migrations(
               version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL, checksum TEXT NOT NULL);
             """
@@ -1015,7 +1025,7 @@ def init_db(root: Path, allow_migration: bool = False) -> None:
         if not existed or allow_migration:
             db.execute(
                 "INSERT OR IGNORE INTO schema_migrations VALUES(?,?,?)",
-                (SCHEMA_REVISION, now_iso(), "agent-os-v0.4-delivery-acceptance"),
+                (SCHEMA_REVISION, now_iso(), "agent-os-v0.6-project-intelligence"),
             )
             db.execute(f"PRAGMA user_version = {SCHEMA_REVISION}")
 
@@ -1051,6 +1061,167 @@ def parse_acceptance_checks(values: list[str]) -> list[dict[str, str]]:
             raise ValueError("expected CLAIM::COMMAND for --acceptance-check") from error
         checks.append({"claim": claim, "command": command})
     return checks
+
+
+def parse_maintenance_deltas(values: list[str]) -> list[dict[str, str]]:
+    deltas: list[dict[str, str]] = []
+    for value in values:
+        try:
+            category, description = safe_split(value)
+        except ValueError as error:
+            raise ValueError("expected CATEGORY::DESCRIPTION for --maintenance-delta") from error
+        if category not in MAINTENANCE_CATEGORIES:
+            raise ValueError(
+                "unsupported maintenance category; expected one of: "
+                + ", ".join(sorted(MAINTENANCE_CATEGORIES))
+            )
+        deltas.append({"category": category, "description": description})
+    return deltas
+
+
+def project_intelligence_config(root: Path) -> dict[str, Any]:
+    project = read_json(os_dir(root) / "project.json")
+    value = project.get("project_intelligence", {})
+    if not isinstance(value, dict):
+        raise ValueError("project_intelligence must be an object")
+    return value
+
+
+def resolved_project_source(root: Path, raw: str) -> Path:
+    candidate = Path(raw).expanduser()
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    return candidate.resolve()
+
+
+def cmd_knowledge_doctor(args: argparse.Namespace) -> int:
+    root = root_path(args.project)
+    config = project_intelligence_config(root)
+    findings: list[dict[str, Any]] = []
+    checked_sources: list[dict[str, Any]] = []
+    freshness_days = int(config.get("freshness_days", 180))
+    if freshness_days <= 0:
+        findings.append({"severity": "FAIL", "code": "INVALID_FRESHNESS", "message": "freshness_days must be positive"})
+        freshness_days = 180
+
+    source_groups = (
+        ("architecture", config.get("architecture_sources", [])),
+        ("knowledge", config.get("knowledge_sources", [])),
+    )
+    for kind, sources in source_groups:
+        if not isinstance(sources, list):
+            findings.append({"severity": "FAIL", "code": "INVALID_SOURCE_LIST", "message": f"{kind}_sources must be a list"})
+            continue
+        if not sources:
+            findings.append({"severity": "WARN", "code": "NO_DECLARED_SOURCES", "message": f"no {kind} sources declared"})
+        for index, source in enumerate(sources, 1):
+            if not isinstance(source, dict):
+                findings.append({"severity": "FAIL", "code": "INVALID_SOURCE", "message": f"{kind}_sources[{index}] must be an object"})
+                continue
+            raw_path = str(source.get("path", "")).strip()
+            role = str(source.get("role", "")).strip()
+            validated = str(source.get("last_validated", "")).strip()
+            if not raw_path or not role or not validated:
+                findings.append({"severity": "FAIL", "code": "INCOMPLETE_SOURCE_METADATA", "message": f"{kind}_sources[{index}] requires path, role, and last_validated"})
+                continue
+            path = resolved_project_source(root, raw_path)
+            exists = path.is_file()
+            item = {"kind": kind, "path": str(path), "role": role, "last_validated": validated, "exists": exists}
+            checked_sources.append(item)
+            if not exists:
+                findings.append({"severity": "FAIL", "code": "MISSING_KNOWLEDGE_SOURCE", "path": str(path), "message": f"declared {kind} source does not exist"})
+                continue
+            try:
+                stamp = datetime.fromisoformat(validated.replace("Z", "+00:00"))
+                if stamp.tzinfo is None:
+                    stamp = stamp.replace(tzinfo=now().tzinfo)
+                age_days = (now() - stamp.astimezone(now().tzinfo)).days
+                item["age_days"] = age_days
+                if age_days > freshness_days:
+                    findings.append({"severity": "WARN", "code": "STALE_KNOWLEDGE_SOURCE", "path": str(path), "message": f"last validated {age_days} days ago; budget is {freshness_days}"})
+            except ValueError:
+                findings.append({"severity": "FAIL", "code": "INVALID_VALIDATION_DATE", "path": str(path), "message": f"invalid last_validated value: {validated}"})
+
+    entrypoints = config.get("verify_entrypoints", [])
+    if not isinstance(entrypoints, list) or not entrypoints:
+        findings.append({"severity": "WARN", "code": "NO_VERIFY_ENTRYPOINT", "message": "no project verify entrypoints declared"})
+        entrypoints = []
+    checked_entrypoints: list[dict[str, Any]] = []
+    for index, entry in enumerate(entrypoints, 1):
+        if not isinstance(entry, dict):
+            findings.append({"severity": "FAIL", "code": "INVALID_VERIFY_ENTRYPOINT", "message": f"verify_entrypoints[{index}] must be an object"})
+            continue
+        unit_id = str(entry.get("work_unit", "")).strip()
+        command = str(entry.get("command", "")).strip()
+        if not unit_id or not command:
+            findings.append({"severity": "FAIL", "code": "INCOMPLETE_VERIFY_ENTRYPOINT", "message": f"verify_entrypoints[{index}] requires work_unit and command"})
+            continue
+        try:
+            unit = work_unit(root, unit_id)
+            command_root = repo_root(root, unit)
+            token = shlex.split(command)[0]
+            executable = resolved_project_source(command_root, token) if "/" in token else Path(shutil.which(token) or "")
+            exists = executable.is_file() and os.access(executable, os.X_OK)
+        except (ValueError, IndexError) as error:
+            findings.append({"severity": "FAIL", "code": "INVALID_VERIFY_ENTRYPOINT", "message": str(error)})
+            continue
+        checked_entrypoints.append({"work_unit": unit_id, "command": command, "executable": str(executable), "exists": exists})
+        if not exists:
+            findings.append({"severity": "FAIL", "code": "MISSING_VERIFY_ENTRYPOINT", "message": f"verify command is not executable: {command}"})
+
+    corpus_raw = str(config.get("failure_corpus_path", ".agent-os/knowledge/failure-corpus.json"))
+    corpus_path = resolved_project_source(root, corpus_raw)
+    try:
+        corpus_path.relative_to(root)
+    except ValueError:
+        findings.append({"severity": "FAIL", "code": "CORPUS_OUTSIDE_PROJECT", "path": str(corpus_path), "message": "failure corpus must stay inside the control root"})
+    entries: list[Any] = []
+    if not corpus_path.is_file():
+        findings.append({"severity": "FAIL", "code": "MISSING_FAILURE_CORPUS", "path": str(corpus_path), "message": "failure corpus does not exist"})
+    else:
+        try:
+            corpus = read_json(corpus_path)
+            entries = corpus.get("entries", [])
+            if not isinstance(entries, list):
+                raise ValueError("failure corpus entries must be a list")
+            seen: set[str] = set()
+            for index, entry in enumerate(entries, 1):
+                if not isinstance(entry, dict):
+                    raise ValueError(f"failure corpus entry {index} must be an object")
+                required = {"run_id", "work_package", "branch_commit", "root_cause", "disposition", "recorded_at"}
+                missing = sorted(required - set(entry))
+                if missing:
+                    raise ValueError(f"failure corpus entry {index} missing: {', '.join(missing)}")
+                run_id = str(entry["run_id"])
+                if run_id in seen:
+                    raise ValueError(f"duplicate failure corpus run_id: {run_id}")
+                seen.add(run_id)
+                if entry.get("disposition") not in KNOWLEDGE_DISPOSITIONS:
+                    raise ValueError(f"invalid failure corpus disposition: {entry.get('disposition')}")
+        except (ValueError, json.JSONDecodeError) as error:
+            findings.append({"severity": "FAIL", "code": "INVALID_FAILURE_CORPUS", "path": str(corpus_path), "message": str(error)})
+
+    failures = sum(item["severity"] == "FAIL" for item in findings)
+    warnings = sum(item["severity"] == "WARN" for item in findings)
+    status = "FAIL" if failures else ("WARN" if warnings else "PASS")
+    report = {
+        "agent_os_version": AGENT_OS_VERSION,
+        "project": str(root),
+        "mutated": False,
+        "status": status,
+        "sources": checked_sources,
+        "verify_entrypoints": checked_entrypoints,
+        "failure_corpus": {"path": str(corpus_path), "entries": len(entries)},
+        "findings": findings,
+        "semantic_conflicts_resolved": False,
+    }
+    if args.json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        for finding in findings:
+            print(f"{finding['severity']:4} {finding['code']} {finding.get('path', '')} {finding['message']}")
+        print(f"SUMMARY status={status} failures={failures} warnings={warnings} sources={len(checked_sources)} corpus_entries={len(entries)}")
+    return 1 if failures or (args.strict and warnings) else 0
 
 
 def permission_wait_status(state: str | None, detail: str | None) -> str | None:
@@ -1219,7 +1390,7 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not (root / ".agent-shift" / "project.json").is_file():
         raise ValueError("Agent Shift must be initialized first")
     target = os_dir(root)
-    for relative in ("policy", "work-packages", "runs", "reviews", "improvements", "challenges", "outcomes", "runtime"):
+    for relative in ("policy", "work-packages", "runs", "reviews", "improvements", "challenges", "outcomes", "knowledge", "runtime"):
         (target / relative).mkdir(parents=True, exist_ok=True)
     created: list[str] = []
     project_file = target / "project.json"
@@ -1234,6 +1405,13 @@ def cmd_init(args: argparse.Namespace) -> int:
             "high_risk_operations": ["deploy", "publish", "credential_access", "private_data", "database_migration", "data_deletion", "destructive_git", "push"],
             "lock_ttl_seconds": DEFAULT_LOCK_SECONDS,
             "default_governance_level": "L0",
+            "project_intelligence": {
+                "architecture_sources": [],
+                "knowledge_sources": [],
+                "verify_entrypoints": [],
+                "failure_corpus_path": ".agent-os/knowledge/failure-corpus.json",
+                "freshness_days": 180,
+            },
         })
         created.append(str(project_file.relative_to(root)))
     policy = target / "policy" / "evidence-review.json"
@@ -1245,6 +1423,9 @@ def cmd_init(args: argparse.Namespace) -> int:
                 "L0": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "merge_gate_pass", "codex_review"],
                 "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "outcome_contract", "merge_gate_pass", "codex_review"],
                 "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
+            },
+            "conditional_acceptance": {
+                "bugfix": ["exact_commit_knowledge_assessment", "failure_corpus_entry"],
             },
             "max_rework_rounds": 3,
             "legacy_runs_count_toward_v04": False,
@@ -1265,6 +1446,15 @@ def cmd_init(args: argparse.Namespace) -> int:
         source = Path(__file__).resolve().parents[1] / "assets" / "proportional-governance.json"
         proportional_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
         created.append(str(proportional_policy.relative_to(root)))
+    intelligence_policy = target / "policy" / "project-intelligence.json"
+    if not intelligence_policy.exists():
+        source = Path(__file__).resolve().parents[1] / "assets" / "project-intelligence.json"
+        intelligence_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+        created.append(str(intelligence_policy.relative_to(root)))
+    corpus = target / "knowledge" / "failure-corpus.json"
+    if not corpus.exists():
+        atomic_json(corpus, {"agent_os_version": AGENT_OS_VERSION, "entries": []})
+        created.append(str(corpus.relative_to(root)))
     claude = root / ".claude"
     (claude / "agents").mkdir(parents=True, exist_ok=True)
     settings = claude / "settings.json"
@@ -1293,7 +1483,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     config_path = os_dir(root) / "project.json"
     config = read_json(config_path)
     source_version = str(config.get("agent_os_version", "0.2"))
-    if source_version not in {"0.2", "0.3", "0.4", AGENT_OS_VERSION}:
+    if source_version not in {"0.2", "0.3", "0.4", "0.5", AGENT_OS_VERSION}:
         raise ValueError(f"unsupported Agent OS upgrade source: {source_version}")
     backup: str | None = None
     db_path = os_dir(root) / "state.db"
@@ -1313,7 +1503,7 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             source_db.backup(backup_db)
         backup = str(backup_path)
     init_db(root, allow_migration=True)
-    for relative in ("challenges", "outcomes"):
+    for relative in ("challenges", "outcomes", "knowledge"):
         (os_dir(root) / relative).mkdir(parents=True, exist_ok=True)
     with db_connect(root) as db:
         integrity = str(db.execute("PRAGMA integrity_check").fetchone()[0])
@@ -1355,6 +1545,14 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
             invariants.append(final_form_rule)
         proportional["invariants"] = invariants
         atomic_json(proportional_policy, proportional)
+    intelligence_policy = os_dir(root) / "policy" / "project-intelligence.json"
+    source = Path(__file__).resolve().parents[1] / "assets" / "project-intelligence.json"
+    if not intelligence_policy.exists():
+        intelligence_policy.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        intelligence = read_json(intelligence_policy)
+        intelligence["agent_os_version"] = AGENT_OS_VERSION
+        atomic_json(intelligence_policy, intelligence)
     evidence_policy = os_dir(root) / "policy" / "evidence-review.json"
     evidence = read_json(evidence_policy)
     evidence["agent_os_version"] = AGENT_OS_VERSION
@@ -1364,6 +1562,9 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
         "L1": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "outcome_contract", "merge_gate_pass", "codex_review"],
         "L2": ["evidence_manifest_pass", "verifier_pass", "exact_commit_match", "no_unresolved_failures", "final_form_acceptance_when_delivered", "director_challenge_pass", "learning_assessment", "five_question_maturity_pass", "outcome_contract", "merge_gate_pass", "codex_review"],
     }
+    evidence["conditional_acceptance"] = {
+        "bugfix": ["exact_commit_knowledge_assessment", "failure_corpus_entry"],
+    }
     evidence.pop("legacy_runs_count_toward_v02", None)
     evidence.pop("legacy_runs_count_toward_v03", None)
     evidence["legacy_runs_count_toward_v04"] = False
@@ -1371,7 +1572,16 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     config["agent_os_version"] = AGENT_OS_VERSION
     config["schema_revision"] = SCHEMA_REVISION
     config.setdefault("default_governance_level", "L0")
+    intelligence_config = config.setdefault("project_intelligence", {})
+    intelligence_config.setdefault("architecture_sources", [])
+    intelligence_config.setdefault("knowledge_sources", [])
+    intelligence_config.setdefault("verify_entrypoints", [])
+    intelligence_config.setdefault("failure_corpus_path", ".agent-os/knowledge/failure-corpus.json")
+    intelligence_config.setdefault("freshness_days", 180)
     atomic_json(config_path, config)
+    corpus = resolved_project_source(root, str(intelligence_config["failure_corpus_path"]))
+    if not corpus.exists():
+        atomic_json(corpus, {"agent_os_version": AGENT_OS_VERSION, "entries": []})
     adapters: list[str] = []
     shift = shift_config(root)
     for unit in shift.get("work_units", []):
@@ -1413,6 +1623,7 @@ def cmd_package_create(args: argparse.Namespace) -> int:
     if delivery_target is None:
         delivery_target = "live" if args.live_endpoint or args.live_check else ("artifact" if args.artifact_path else "repo")
     acceptance_checks = parse_acceptance_checks(args.acceptance_check)
+    maintenance_deltas = parse_maintenance_deltas(args.maintenance_delta)
     if level == "L0":
         outcome_contract = {
             "mode": "delivery", "required_post_merge": False,
@@ -1432,6 +1643,7 @@ def cmd_package_create(args: argparse.Namespace) -> int:
         "project_id": read_json(os_dir(root) / "project.json")["id"],
         "work_unit": args.work_unit, "repo_root": str(unit["repo_root"]),
         "goal": args.goal, "objective": objective, "assumptions": args.assumption,
+        "work_type": args.work_type,
         "governance": {"level": level, "risk_factors": args.risk_factor},
         "director_context": {
             "mission_alignment": mission_alignment,
@@ -1464,6 +1676,18 @@ def cmd_package_create(args: argparse.Namespace) -> int:
             "acceptance_checks": acceptance_checks,
         },
         "outcome_contract": outcome_contract,
+        "maintenance": {
+            "deltas": maintenance_deltas,
+            "owner": args.maintenance_owner,
+            "rationale": args.maintenance_rationale,
+            "removal_plan": args.maintenance_removal,
+            "rollback_plan": args.maintenance_rollback,
+        },
+        "knowledge_plan": {
+            "required": args.work_type == "bugfix",
+            "reproduction": args.bug_reproduction,
+            "expected_disposition": args.knowledge_disposition,
+        },
         "owner": {"role": "engineering-builder", "runtime": "claude-code"},
         "reviewer": {"role": "product-technical-director", "runtime": "codex"},
         "verifier": {"role": "independent-verifier", "runtime": "codex-subagent-or-claude-verifier"},
@@ -1613,6 +1837,43 @@ def validate_contract(root: Path, contract: dict[str, Any]) -> list[str]:
             value = outcome.get(key)
             if value is None or not str(value).strip():
                 problems.append(f"outcome_contract.{key} must not be empty")
+    if revision >= 6:
+        work_type = contract.get("work_type")
+        if work_type not in WORK_TYPES:
+            problems.append("work_type must be one of: " + ", ".join(sorted(WORK_TYPES)))
+        maintenance = contract.get("maintenance", {})
+        deltas = maintenance.get("deltas", [])
+        if not isinstance(deltas, list):
+            problems.append("maintenance.deltas must be a list")
+            deltas = []
+        categories: set[str] = set()
+        for index, item in enumerate(deltas, 1):
+            if not isinstance(item, dict):
+                problems.append(f"maintenance.deltas[{index}] must be an object")
+                continue
+            category = str(item.get("category", ""))
+            description = str(item.get("description", "")).strip()
+            if category not in MAINTENANCE_CATEGORIES:
+                problems.append(f"maintenance.deltas[{index}].category is invalid")
+            else:
+                categories.add(category)
+            if not description:
+                problems.append(f"maintenance.deltas[{index}].description must not be empty")
+        if deltas:
+            for key in ("owner", "rationale", "removal_plan", "rollback_plan"):
+                if not str(maintenance.get(key) or "").strip():
+                    problems.append(f"maintenance.{key} is required when maintenance deltas are declared")
+        if categories & {"permission", "persisted-state", "external-service"} and governance_level(contract) == "L0":
+            problems.append("permission, persisted-state, or external-service deltas require at least L1 governance")
+        knowledge_plan = contract.get("knowledge_plan", {})
+        if work_type == "bugfix":
+            if knowledge_plan.get("required") is not True:
+                problems.append("bugfix requires knowledge_plan.required=true")
+            if not str(knowledge_plan.get("reproduction") or "").strip():
+                problems.append("bugfix requires a reproducible pre-fix symptom")
+        disposition = knowledge_plan.get("expected_disposition")
+        if disposition is not None and disposition not in KNOWLEDGE_DISPOSITIONS:
+            problems.append("knowledge_plan.expected_disposition is invalid")
     return problems
 
 
@@ -2417,6 +2678,112 @@ def cmd_learn(args: argparse.Namespace) -> int:
     return 0
 
 
+def checked_run_relative_file(worktree: Path, raw: str, option: str) -> str:
+    candidate = (worktree / raw).resolve()
+    try:
+        relative = candidate.relative_to(worktree)
+    except ValueError as error:
+        raise ValueError(f"{option} must stay inside the Run worktree: {raw}") from error
+    if not candidate.is_file():
+        raise ValueError(f"{option} does not exist at the exact Run commit: {raw}")
+    code, _ = run(["git", "-C", str(worktree), "ls-files", "--error-unmatch", str(relative)], worktree, timeout=30)
+    if code:
+        raise ValueError(f"{option} must reference a tracked file: {raw}")
+    return str(relative)
+
+
+def cmd_knowledge_record(args: argparse.Namespace) -> int:
+    root = root_path(args.project)
+    with db_connect(root) as db:
+        row = active_run(db, args.run)
+    contract = load_package(root, str(row["package_id"]))
+    if int(contract.get("schema_revision", 1)) < 6:
+        raise ValueError("knowledge-record applies only to v0.6 Work Packages")
+    if contract.get("work_type") != "bugfix" and not args.allow_non_bugfix:
+        raise ValueError("knowledge-record is required for bugfix packages; use --allow-non-bugfix for an explicit optional assessment")
+    worktree = Path(str(row["worktree"])).resolve()
+    branch_commit = git(worktree, "rev-parse", "HEAD")
+    manifest_path = artifact_path(root, args.run, "evidence/manifest.json")
+    if not manifest_path.is_file():
+        raise ValueError("knowledge-record requires a completed Evidence Manifest")
+    manifest = read_json(manifest_path)
+    if manifest.get("result") != "PASS" or manifest.get("branch_commit") != branch_commit:
+        raise ValueError("knowledge-record requires PASS evidence bound to the exact current commit")
+    regression: list[dict[str, str]] = []
+    for value in args.regression_evidence:
+        try:
+            raw_path, claim = safe_split(value)
+        except ValueError as error:
+            raise ValueError("expected PATH::CLAIM for --regression-evidence") from error
+        regression.append({"path": checked_run_relative_file(worktree, raw_path, "regression evidence"), "claim": claim})
+    knowledge_refs = [checked_run_relative_file(worktree, value, "knowledge reference") for value in args.knowledge_ref]
+    if args.disposition == "test" and not regression:
+        raise ValueError("test disposition requires at least one --regression-evidence PATH::CLAIM")
+    if args.disposition in {"rule", "skill", "adr"} and not knowledge_refs:
+        raise ValueError(f"{args.disposition} disposition requires at least one --knowledge-ref")
+    if args.disposition == "none" and not args.reason.strip():
+        raise ValueError("none disposition requires a concrete reason")
+    expected = contract.get("knowledge_plan", {}).get("expected_disposition")
+    assessment = {
+        "work_package": str(row["package_id"]),
+        "work_type": contract.get("work_type"),
+        "branch_commit": branch_commit,
+        "reproduction": args.reproduction,
+        "root_cause": args.root_cause,
+        "regression_evidence": regression,
+        "sibling_risk_search": args.sibling_risk_search,
+        "disposition": args.disposition,
+        "disposition_reason": args.reason,
+        "knowledge_refs": knowledge_refs,
+        "expected_disposition": expected,
+        "expectation_changed": bool(expected and expected != args.disposition),
+        "automatic_policy_adoption": False,
+        "recorded_by": "codex",
+        "recorded_at": now_iso(),
+    }
+    path = write_run_artifact(root, args.run, "knowledge-assessment.json", assessment)
+    with db_connect(root) as db:
+        db.execute(
+            "INSERT OR REPLACE INTO knowledge_assessments VALUES(?,?,?,?,?)",
+            (args.run, args.disposition, str(path), branch_commit, now_iso()),
+        )
+    append_event(root, args.run, "codex", "knowledge_assessed", args.reason, disposition=args.disposition)
+    print(json.dumps(assessment, ensure_ascii=False, indent=2))
+    return 0
+
+
+def materialize_failure_corpus(root: Path, run_id: str, assessment: dict[str, Any]) -> Path:
+    config = project_intelligence_config(root)
+    path = resolved_project_source(root, str(config.get("failure_corpus_path", ".agent-os/knowledge/failure-corpus.json")))
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise ValueError("failure corpus must stay inside the control root") from error
+    document = read_json(path) if path.is_file() else {"agent_os_version": AGENT_OS_VERSION, "entries": []}
+    entries = document.setdefault("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError("failure corpus entries must be a list")
+    entry = {
+        "run_id": run_id,
+        "work_package": assessment.get("work_package"),
+        "branch_commit": assessment.get("branch_commit"),
+        "reproduction": assessment.get("reproduction"),
+        "root_cause": assessment.get("root_cause"),
+        "regression_evidence": assessment.get("regression_evidence", []),
+        "sibling_risk_search": assessment.get("sibling_risk_search"),
+        "disposition": assessment.get("disposition"),
+        "disposition_reason": assessment.get("disposition_reason"),
+        "knowledge_refs": assessment.get("knowledge_refs", []),
+        "recorded_at": assessment.get("recorded_at"),
+    }
+    entries[:] = [item for item in entries if isinstance(item, dict) and item.get("run_id") != run_id]
+    entries.append(entry)
+    entries.sort(key=lambda item: (str(item.get("recorded_at", "")), str(item.get("run_id", ""))))
+    document["agent_os_version"] = AGENT_OS_VERSION
+    atomic_json(path, document)
+    return path
+
+
 def build_maturity_report(root: Path, run_id: str) -> tuple[dict[str, Any], list[str]]:
     with db_connect(root) as db:
         row = active_run(db, run_id)
@@ -2719,6 +3086,8 @@ def cmd_review(args: argparse.Namespace) -> int:
             raise ValueError(output)
     gate: dict[str, Any] = {}
     maturity: dict[str, Any] = {}
+    knowledge: dict[str, Any] = {}
+    corpus_path: Path | None = None
     delivery_acceptance_checks: list[dict[str, Any]] = []
     level = governance_level(contract)
     if args.decision == "ACCEPTED":
@@ -2798,6 +3167,23 @@ def cmd_review(args: argparse.Namespace) -> int:
             outcome = read_json(outcome_path) if outcome_path.is_file() else {}
             if outcome.get("contract") != contract.get("outcome_contract", {}):
                 raise ValueError("ACCEPTED requires the frozen Outcome Contract to match the Work Package")
+        if revision >= 6 and contract.get("work_type") == "bugfix":
+            knowledge_path = artifact_path(root, args.run, "knowledge-assessment.json")
+            if not knowledge_path.is_file():
+                raise ValueError("bugfix ACCEPTED requires a knowledge assessment")
+            knowledge = read_json(knowledge_path)
+            if knowledge.get("branch_commit") != branch_commit:
+                raise ValueError("bugfix knowledge assessment must bind the exact accepted commit")
+            for key in ("reproduction", "root_cause", "sibling_risk_search", "disposition", "disposition_reason"):
+                if not str(knowledge.get(key) or "").strip():
+                    raise ValueError(f"bugfix knowledge assessment requires {key}")
+            disposition = knowledge.get("disposition")
+            if disposition not in KNOWLEDGE_DISPOSITIONS:
+                raise ValueError("bugfix knowledge assessment has an invalid disposition")
+            if disposition == "test" and not knowledge.get("regression_evidence"):
+                raise ValueError("test disposition requires regression evidence")
+            if disposition in {"rule", "skill", "adr"} and not knowledge.get("knowledge_refs"):
+                raise ValueError(f"{disposition} disposition requires a durable knowledge reference")
         if level == "L2":
             if revision >= 4:
                 challenge = read_json(artifact_path(root, args.run, "director-challenge.json"))
@@ -2820,6 +3206,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         gate = json.loads(output)
         if gate.get("result") != "PASS" or gate.get("branch_commit") != branch_commit:
             raise ValueError("ACCEPTED requires exact passing merge gate")
+        if knowledge:
+            corpus_path = materialize_failure_corpus(root, args.run, knowledge)
     review = {
         "agent_os_version": AGENT_OS_VERSION, "id": f"review-{args.run}-r{review_round}",
         "round": review_round,
@@ -2830,6 +3218,8 @@ def cmd_review(args: argparse.Namespace) -> int:
         "branch_commit": branch_commit,
         "evidence_manifest_sha256": sha256(manifest_path) if manifest_path.is_file() else None,
         "verifier_result": verifier.get("result"), "maturity_result": maturity.get("result"),
+        "knowledge_disposition": knowledge.get("disposition"),
+        "knowledge_assessment_sha256": sha256(artifact_path(root, args.run, "knowledge-assessment.json")) if knowledge else None,
         "delivery_acceptance_checks": delivery_acceptance_checks,
         "live_acceptance_checks": (
             delivery_acceptance_checks
@@ -2849,6 +3239,7 @@ def cmd_review(args: argparse.Namespace) -> int:
         f"- Priority: {contract.get('director_context', {}).get('priority', 'legacy')}\n"
         f"- Expected gain: {contract.get('director_context', {}).get('expected_gain', 'legacy package')}\n\n"
         f"## Evidence\n\nManifest: `{review.get('evidence_manifest_sha256')}`\n\n"
+        f"## Project Learning\n\nDisposition: `{review.get('knowledge_disposition') or 'NOT_REQUIRED'}`  \nAssessment: `{review.get('knowledge_assessment_sha256')}`\n\n"
         f"## Five Questions\n\nMaturity: `{review.get('maturity_result')}`  \nReport: `{review.get('maturity_report_sha256')}`\n\n"
         f"## Decision\n\n{args.decision}\n\n## Summary\n\n{args.summary}\n\n## Required Changes\n\n" + ("\n".join(f"- {item}" for item in args.required_change) or "None") + "\n",
         encoding="utf-8",
@@ -2856,13 +3247,21 @@ def cmd_review(args: argparse.Namespace) -> int:
     control_git_code, _ = run(["git", "rev-parse", "--verify", "HEAD"], root, timeout=30)
     if control_git_code == 0 and args.decision == "ACCEPTED":
         expected = {str(review_json.relative_to(root)), str(review_md.relative_to(root))}
+        if corpus_path is not None:
+            expected.add(str(corpus_path.relative_to(root)))
         learning_path = artifact_path(root, args.run, "learning-assessment.json")
         if learning_path.is_file():
             proposal = read_json(learning_path).get("proposal", {})
             proposal_path = Path(str(proposal.get("path", ""))) if proposal else None
             if proposal_path and proposal_path.is_file() and root in proposal_path.resolve().parents:
                 expected.add(str(proposal_path.resolve().relative_to(root)))
-        status = git(root, "status", "--porcelain", "--untracked-files=all")
+        status_code, status = run(
+            ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"],
+            root,
+            timeout=30,
+        )
+        if status_code:
+            raise ValueError(f"failed to inspect control worktree: {status}")
         changed = {line[3:] for line in status.splitlines() if len(line) > 3}
         unexpected = sorted(changed - expected)
         if unexpected:
@@ -3383,7 +3782,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(("PASS" if identity_ok else "FAIL", "adapter project and work-unit identity"))
         except Exception as error:
             checks.append(("FAIL", f"adapter config: {error}"))
-    for relative in (".agent-os/project.json", ".agent-os/policy/evidence-review.json", ".agent-os/policy/director-principles.json", ".agent-os/policy/five-question-maturity.json", ".agent-os/policy/proportional-governance.json", ".agent-os/state.db", ".claude/settings.json", ".claude/agents/verifier.md", "AGENTS.md", "CLAUDE.md"):
+    for relative in (".agent-os/project.json", ".agent-os/policy/evidence-review.json", ".agent-os/policy/director-principles.json", ".agent-os/policy/five-question-maturity.json", ".agent-os/policy/proportional-governance.json", ".agent-os/policy/project-intelligence.json", ".agent-os/knowledge/failure-corpus.json", ".agent-os/state.db", ".claude/settings.json", ".claude/agents/verifier.md", "AGENTS.md", "CLAUDE.md"):
         checks.append(("PASS" if (root / relative).is_file() else "FAIL", relative))
     try:
         config = read_json(os_dir(root) / "project.json")
@@ -3394,9 +3793,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     try:
         with db_connect(root) as db:
             run_columns = {str(row[1]) for row in db.execute("PRAGMA table_info(runs)").fetchall()}
-            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.5 Run database schema"))
+            checks.append(("PASS" if {"merge_commit", "rollback_commit", "maturity_status", "governance_level", "outcome_status", "economics_status"} <= run_columns else "FAIL", "v0.6 Run database schema"))
             tables = {str(row[0]) for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-            checks.append(("PASS" if {"failures", "improvements", "outcomes"} <= tables else "FAIL", "v0.5 failure, learning, and outcome tables"))
+            checks.append(("PASS" if {"failures", "improvements", "outcomes", "knowledge_assessments"} <= tables else "FAIL", "v0.6 failure, learning, outcome, and knowledge tables"))
             for package in db.execute("SELECT * FROM work_packages").fetchall():
                 problems = validate_contract(root, load_package(root, package["id"]))
                 checks.append(("PASS" if not problems else "FAIL", f"package {package['id']}: {problems or package['status']}"))
@@ -3465,7 +3864,7 @@ def cmd_hook(args: argparse.Namespace) -> int:
             read_only_prefixes = (
                 "pwd", "ls", "find ", "rg ", "grep ", "sed -n", "cat ", "head ", "tail ", "wc ",
                 "git status", "git diff", "git log", "git show", "git rev-parse", "git branch --show-current",
-                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os context-doctor", "agent-os recover",
+                "node --check", "python3 -m json.tool", "agent-os status", "agent-os doctor", "agent-os context-doctor", "agent-os knowledge-doctor", "agent-os recover",
                 "agent-os claude-status", "agent-shift status", "agent-shift doctor",
             )
             if not lock:
@@ -3516,6 +3915,14 @@ def parser() -> argparse.ArgumentParser:
     init = sub.add_parser("init"); init.add_argument("project"); init.add_argument("--id", required=True); init.add_argument("--name", required=True); init.add_argument("--mission", required=True); init.set_defaults(func=cmd_init)
     upgrade = sub.add_parser("upgrade"); upgrade.add_argument("project"); upgrade.set_defaults(func=cmd_upgrade)
     package = sub.add_parser("package-create"); package.add_argument("project"); package.add_argument("--id", required=True); package.add_argument("--work-unit", required=True); package.add_argument("--governance-level", choices=sorted(GOVERNANCE_LEVELS), default="L0"); package.add_argument("--risk-factor", action="append", default=[]); package.add_argument("--goal", required=True); package.add_argument("--objective"); package.add_argument("--mission-alignment"); package.add_argument("--priority", choices=("P0", "P1", "P2", "P3")); package.add_argument("--expected-gain", required=True); package.add_argument("--external-signal", action="append", default=[]); package.add_argument("--frontline-signal", action="append", default=[]); package.add_argument("--first-principles", action="append", default=[]); package.add_argument("--selected-approach"); package.add_argument("--rationale"); package.add_argument("--alternative", action="append", default=[]); package.add_argument("--tradeoff", action="append", default=[]); package.add_argument("--external-side-effect", action="append", default=[]); package.add_argument("--rollback-check", action="append", default=[]); package.add_argument("--delivery-target", choices=sorted(DELIVERY_TARGETS)); package.add_argument("--artifact-path", action="append", default=[]); package.add_argument("--live-endpoint", action="append", default=[]); package.add_argument("--live-check", action="append", default=[]); package.add_argument("--acceptance-check", action="append", default=[]); package.add_argument("--outcome-metric"); package.add_argument("--outcome-baseline"); package.add_argument("--outcome-target"); package.add_argument("--outcome-validation-window"); package.add_argument("--outcome-evidence-source"); package.add_argument("--allow", nargs="*", default=[]); package.add_argument("--deny", nargs="*", default=[]); package.add_argument("--verify", nargs="*", default=[]); package.add_argument("--verified", action="append", default=[]); package.add_argument("--reviewed", action="append", default=[]); package.add_argument("--observed", action="append", default=[]); package.add_argument("--assumption", action="append", default=[]); package.add_argument("--constraint", action="append", default=[]); package.add_argument("--stop", action="append", default=["scope expansion", "credential or irreversible action", "three failed rework rounds"]); package.add_argument("--max-runs", type=int, default=4); package.add_argument("--max-rework", type=int, default=3); package.set_defaults(func=cmd_package_create)
+    package.add_argument("--work-type", choices=sorted(WORK_TYPES), default="feature")
+    package.add_argument("--bug-reproduction")
+    package.add_argument("--knowledge-disposition", choices=sorted(KNOWLEDGE_DISPOSITIONS))
+    package.add_argument("--maintenance-delta", action="append", default=[])
+    package.add_argument("--maintenance-owner")
+    package.add_argument("--maintenance-rationale")
+    package.add_argument("--maintenance-removal")
+    package.add_argument("--maintenance-rollback")
     challenge = sub.add_parser("director-challenge"); challenge.add_argument("project"); challenge.add_argument("--package", required=True); challenge.add_argument("--reviewer", required=True); challenge.add_argument("--decision", choices=("PASS", "CHANGES_REQUESTED"), required=True); challenge.add_argument("--summary", required=True); challenge.add_argument("--finding", action="append", default=[]); challenge.add_argument("--review-file", required=True); challenge.set_defaults(func=cmd_challenge_record)
     ready = sub.add_parser("package-ready"); ready.add_argument("project"); ready.add_argument("--id", required=True); ready.set_defaults(func=cmd_package_ready)
     start = sub.add_parser("run-start"); start.add_argument("project"); start.add_argument("--package", required=True); start.add_argument("--run", required=True); start.add_argument("--agent", choices=("claude", "claude-subagent", "codex-subagent"), default="claude"); start.set_defaults(func=cmd_run_start)
@@ -3531,6 +3938,18 @@ def parser() -> argparse.ArgumentParser:
     failure = sub.add_parser("failure-record"); failure.add_argument("project"); failure.add_argument("--run", required=True); failure.add_argument("--stage", required=True); failure.add_argument("--category", choices=sorted(FAILURE_CATEGORIES), required=True); failure.add_argument("--blocker-class", choices=sorted(BLOCKER_CLASSES), required=True); failure.add_argument("--symptom", required=True); failure.add_argument("--root-cause", required=True); failure.add_argument("--evidence-ref", action="append", default=[]); failure.set_defaults(func=cmd_failure_record)
     resolve = sub.add_parser("failure-resolve"); resolve.add_argument("project"); resolve.add_argument("--run", required=True); resolve.add_argument("--id", required=True); resolve.add_argument("--resolution", required=True); resolve.set_defaults(func=cmd_failure_resolve)
     learn = sub.add_parser("learn"); learn.add_argument("project"); learn.add_argument("--run", required=True); learn.add_argument("--outcome", choices=("no-change", "proposal"), required=True); learn.add_argument("--observation", required=True); learn.add_argument("--reason", required=True); learn.add_argument("--hypothesis"); learn.add_argument("--proposed-change"); learn.add_argument("--risk", choices=("L1", "L2", "L3"), default="L1"); learn.add_argument("--expected-effect"); learn.add_argument("--metric"); learn.add_argument("--validation-window"); learn.set_defaults(func=cmd_learn)
+    knowledge = sub.add_parser("knowledge-record", help="bind a bug fix to reusable project knowledge")
+    knowledge.add_argument("project")
+    knowledge.add_argument("--run", required=True)
+    knowledge.add_argument("--reproduction", required=True)
+    knowledge.add_argument("--root-cause", required=True)
+    knowledge.add_argument("--regression-evidence", action="append", default=[])
+    knowledge.add_argument("--sibling-risk-search", required=True)
+    knowledge.add_argument("--disposition", choices=sorted(KNOWLEDGE_DISPOSITIONS), required=True)
+    knowledge.add_argument("--reason", required=True)
+    knowledge.add_argument("--knowledge-ref", action="append", default=[])
+    knowledge.add_argument("--allow-non-bugfix", action="store_true")
+    knowledge.set_defaults(func=cmd_knowledge_record)
     maturity = sub.add_parser("maturity-report"); maturity.add_argument("project"); maturity.add_argument("--run", required=True); maturity.set_defaults(func=cmd_maturity_report)
     review = sub.add_parser("review"); review.add_argument("project"); review.add_argument("--run", required=True); review.add_argument("--decision", choices=sorted(DECISIONS), required=True); review.add_argument("--summary", required=True); review.add_argument("--required-change", action="append", default=[]); review.set_defaults(func=cmd_review)
     merge = sub.add_parser("merge"); merge.add_argument("project"); merge.add_argument("--run", required=True); merge.set_defaults(func=cmd_merge)
@@ -3555,6 +3974,11 @@ def parser() -> argparse.ArgumentParser:
     context_doctor.add_argument("--strict", action="store_true")
     context_doctor.add_argument("--json", action="store_true")
     context_doctor.set_defaults(func=cmd_context_doctor)
+    knowledge_doctor = sub.add_parser("knowledge-doctor", help="audit project knowledge sources without mutating them")
+    knowledge_doctor.add_argument("project")
+    knowledge_doctor.add_argument("--strict", action="store_true")
+    knowledge_doctor.add_argument("--json", action="store_true")
+    knowledge_doctor.set_defaults(func=cmd_knowledge_doctor)
     hook = sub.add_parser("hook"); hook.add_argument("phase", choices=("pre", "post", "failure", "stop")); hook.set_defaults(func=cmd_hook)
     return result
 

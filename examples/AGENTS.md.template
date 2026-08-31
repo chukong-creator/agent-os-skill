@@ -13,6 +13,7 @@ Do not repeat general coding advice or the Agent OS protocol here.
 ## Verification routing
 
 - Name the fastest relevant project check and the final delivered-form check.
+- Declare the architecture and knowledge sources audited by `knowledge-doctor`.
 - Put long verification, release, migration, or design procedures in a Skill or
   referenced file and link it here only when it applies.
 

@@ -1,5 +1,5 @@
 {
-  "agent_os_version": "0.5",
+  "agent_os_version": "0.6",
   "policy_id": "proportional-governance",
   "default_level": "L0",
   "levels": {

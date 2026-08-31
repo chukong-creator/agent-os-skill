@@ -1,4 +1,4 @@
-# Agent OS v0.5 proportional governance
+# Agent OS v0.6 proportional governance
 
 Governance level expresses delivery risk, not urgency. Priority remains `P0` to `P3`; it never lowers the required controls.
 

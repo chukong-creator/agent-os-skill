@@ -1,14 +1,14 @@
 ---
 name: agent-os
-description: Operate Agent OS v0.5 when delivery needs cross-Agent handoff, isolation, recovery, independent acceptance, or external-release evidence. Keep local reversible work on the normal single-Agent loop.
+description: Operate Agent OS v0.6 when delivery needs cross-Agent handoff, project learning, isolation, recovery, independent acceptance, or external-release evidence. Keep local reversible work on the normal single-Agent loop.
 ---
 
 # Agent OS
 
 Agent OS is the governance and evidence layer above Agent Shift. Agent Shift
 owns Git baselines, branches, worktrees, and merge mechanics. Agent OS owns
-work contracts, risk, permissions, Runs, evidence, review, Outcome, recovery,
-and governance economics.
+work contracts, risk, permissions, Runs, evidence, review, Project Intelligence,
+Outcome, recovery, and governance economics.
 
 ## Route before loading detail
 
@@ -31,8 +31,8 @@ and governance economics.
     [maturity-contract.md](references/maturity-contract.md)
   - explicit CC Switch routing:
     [model-routing.md](references/model-routing.md)
-  - context and instruction maintenance:
-    [context-engineering.md](references/context-engineering.md)
+  - context maintenance: [context-engineering.md](references/context-engineering.md)
+  - project learning: [project-intelligence.md](references/project-intelligence.md)
 
 ## Preserve the non-derivable invariants
 
@@ -77,7 +77,7 @@ of copying stale examples:
 
 ```text
 package-create -> [director-challenge for L2] -> package-ready
-run-start -> claude-start -> verify -> verifier
+run-start -> claude-start -> verify -> [knowledge-record for bugfix] -> verifier
 review -> rework-start or merge -> outcome-check for L1/L2
 ```
 
@@ -104,6 +104,7 @@ delivery evidence.
 Claude owns implementation and ordinary rework in its assigned worktree.
 `CHANGES_REQUESTED` returns that same worktree to Claude. Mechanical verification
 checks structure, hashes, and the exact commit; it is not product acceptance.
+Bug fixes also need an exact-commit Knowledge Assessment before acceptance.
 
 ## Keep routing finite
 
@@ -147,6 +148,7 @@ Run the read-only audit after changing `AGENTS.md`, `CLAUDE.md`, or a Skill:
 ```bash
 agent-os context-doctor <project-root> --include-global \
   --skill /Users/fanchao/.codex/skills/agent-os/SKILL.md --strict
+agent-os knowledge-doctor <project-root> --strict
 ```
 
 Keep non-derivable boundaries and project gotchas always loaded. Move procedures,
@@ -155,6 +157,4 @@ reference fails; duplication and budget excess warn, and fail under `--strict`.
 
 ## Resources
 
-- `scripts/agent_os.py`: deterministic control plane and context audit
-- `references/`: detailed policy loaded by task stage
-- `assets/`: machine-readable governance defaults
+- `scripts/`, `references/`, and `assets/`: control plane, staged policy, and defaults
