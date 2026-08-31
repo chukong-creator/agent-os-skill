@@ -1,0 +1,45 @@
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Compile control planes
+        run: python -m py_compile skills/agent-os/scripts/agent_os.py skills/agent-shift/scripts/agent_shift.py
+      - name: Run regression suites
+        run: |
+          python skills/agent-shift/scripts/test_agent_shift_views.py
+          python skills/agent-os/scripts/test_agent_os_routing.py
+          python skills/agent-os/scripts/test_agent_os_v06.py
+          python skills/agent-os/scripts/test_agent_os_v05.py
+          python skills/agent-os/scripts/test_agent_os_v04.py
+          python skills/agent-os/scripts/test_agent_os_v03.py
+      - name: Audit persistent context
+        run: >-
+          python skills/agent-os/scripts/agent_os.py context-doctor .
+          --skill skills/agent-os/SKILL.md --strict
+      - name: Smoke-test isolated installation
+        env:
+          HOME: ${{ runner.temp }}/agent-os-home
+          CODEX_HOME: ${{ runner.temp }}/agent-os-home/.codex
+          BIN_DIR: ${{ runner.temp }}/agent-os-home/.local/bin
+        run: |
+          ./scripts/install.sh
+          "$BIN_DIR/agent-os" --help
+          "$BIN_DIR/agent-shift" --help

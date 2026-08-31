@@ -352,9 +352,9 @@ def test_v03_explicit_migration(parent: Path) -> None:
     with sqlite3.connect(root / ".agent-os/state.db") as db:
         db.execute("PRAGMA user_version = 3")
     output = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
-    assert output["from"] == "0.3" and output["to"] == "0.5" and output["database_backup"]
+    assert output["from"] == "0.3" and output["to"] == "0.6" and output["database_backup"]
     with sqlite3.connect(root / ".agent-os/state.db") as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 5
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 6
         assert "outcomes" in {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     again = json.loads(call([AGENT_OS, "upgrade", str(root)], root))
     assert again["idempotent"] is True and again["database_backup"] is None

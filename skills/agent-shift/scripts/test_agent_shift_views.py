@@ -8,6 +8,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).with_name("agent_shift.py")
@@ -66,6 +67,37 @@ class WorkQueueViewTests(unittest.TestCase):
                     break
             path.write_text("\n".join(lines) + "\n", encoding="utf-8")
             self.assertNotEqual(agent_shift.read_work_queue_metadata(path), agent_shift.work_queue_metadata(state))
+
+    def test_active_execution_requires_one_live_session(self) -> None:
+        live = [{"name": "builder", "state": "working"}]
+        self.assertEqual(
+            agent_shift.evaluate_active_execution(self.state(), live, False),
+            ("PASS", "active Claude state has exactly one live worktree session"),
+        )
+        level, message = agent_shift.evaluate_active_execution(self.state(), [], True)
+        self.assertEqual(level, "FAIL")
+        self.assertIn("partial changes", message)
+        level, message = agent_shift.evaluate_active_execution(
+            self.state(agent_branch="agent/codex-subagent/app/run-v2-r2"), live, True,
+        )
+        self.assertEqual(level, "FAIL")
+        self.assertIn("executor identity", message)
+
+    def test_active_execution_query_uses_recorded_worktree(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            worktree = Path(temporary)
+            state = self.state(worktree_path=str(worktree))
+            with (
+                mock.patch.object(
+                    agent_shift,
+                    "query_claude_sessions",
+                    return_value=("PASS", "ok", [{"state": "working"}]),
+                ) as query,
+                mock.patch.object(agent_shift, "run_command", return_value=(0, "")),
+            ):
+                result = agent_shift.check_active_execution(state)
+            self.assertEqual(result, ("PASS", "active Claude state has exactly one live worktree session"))
+            query.assert_called_once_with(worktree)
 
 
 if __name__ == "__main__":

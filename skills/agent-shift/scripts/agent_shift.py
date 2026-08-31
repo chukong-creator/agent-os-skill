@@ -357,10 +357,10 @@ def run_command(command: str, cwd: Path, timeout: int = 180) -> tuple[int, str]:
     return completed.returncode, completed.stdout.rstrip()
 
 
-def check_claude_sessions(root: Path) -> tuple[str, str]:
+def query_claude_sessions(root: Path) -> tuple[str, str, list[dict[str, Any]]]:
     claude = shutil.which("claude")
     if not claude:
-        return "FAIL", "claude executable not found"
+        return "FAIL", "claude executable not found", []
     try:
         completed = subprocess.run(
             [claude, "agents", "--json", "--all", "--cwd", str(root)],
@@ -371,14 +371,58 @@ def check_claude_sessions(root: Path) -> tuple[str, str]:
             check=False,
         )
     except subprocess.TimeoutExpired:
-        return "WARN", "claude agent query timed out"
+        return "WARN", "claude agent query timed out", []
     if completed.returncode != 0:
-        return "WARN", f"claude agent query failed: {completed.stderr.strip()}"
+        return "WARN", f"claude agent query failed: {completed.stderr.strip()}", []
     try:
         sessions = json.loads(completed.stdout or "[]")
     except json.JSONDecodeError:
-        return "WARN", "claude agent query returned invalid JSON"
-    return "PASS", f"claude available; {len(sessions)} recorded background session(s) for cwd"
+        return "WARN", "claude agent query returned invalid JSON", []
+    if not isinstance(sessions, list) or not all(isinstance(item, dict) for item in sessions):
+        return "WARN", "claude agent query returned an invalid payload", []
+    return "PASS", f"claude available; {len(sessions)} recorded background session(s) for cwd", sessions
+
+
+def check_claude_sessions(root: Path) -> tuple[str, str]:
+    level, message, _ = query_claude_sessions(root)
+    return level, message
+
+
+def evaluate_active_execution(
+    state: dict[str, Any], sessions: list[dict[str, Any]], worktree_dirty: bool,
+) -> tuple[str, str]:
+    branch = str(state.get("agent_branch") or "")
+    if "/codex-subagent/" in branch:
+        return "FAIL", "Claude-owned state points to a codex-subagent branch; executor identity is inconsistent"
+    terminal_states = {"done", "completed", "succeeded", "failed", "stopped", "cancelled", "canceled", "interrupted"}
+    active = [
+        item for item in sessions
+        if str(item.get("state") or "unknown").strip().lower() not in terminal_states
+    ]
+    if len(active) > 1:
+        return "FAIL", f"active Claude state has {len(active)} live sessions in one worktree; single-writer invariant violated"
+    if not active:
+        suffix = " and the worktree has partial changes" if worktree_dirty else ""
+        return "FAIL", f"active Claude state has no live session{suffix}; explicit recovery or state correction is required"
+    return "PASS", "active Claude state has exactly one live worktree session"
+
+
+def check_active_execution(state: dict[str, Any]) -> tuple[str, str] | None:
+    if state.get("status") not in {"CLAUDE_IMPLEMENTING", "CLAUDE_REWORK"}:
+        return None
+    worktree_value = state.get("worktree_path")
+    if not worktree_value:
+        return "FAIL", "active Claude state has no recorded worktree"
+    worktree = Path(str(worktree_value))
+    if not worktree.is_dir():
+        return "FAIL", f"active Claude worktree is missing: {worktree}"
+    level, message, sessions = query_claude_sessions(worktree)
+    if level != "PASS":
+        return level, f"active Claude session diagnosis unavailable: {message}"
+    git_code, git_status = run_command("git status --porcelain", worktree, timeout=10)
+    if git_code != 0:
+        return "WARN", "active Claude worktree status could not be inspected"
+    return evaluate_active_execution(state, sessions, bool(git_status))
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -420,6 +464,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 checks.append(("PASS" if queue_matches else "FAIL", "WORK_QUEUE.md matches state.json"))
         except (OSError, ValueError, json.JSONDecodeError) as error:
             checks.append(("FAIL", f"invalid WORK_QUEUE.md marker: {error}"))
+        active_execution = check_active_execution(state)
+        if active_execution is not None:
+            checks.append(active_execution)
     try:
         baselines = load_json(shift / "baselines.json")
         checks.append(("PASS" if baselines.get("protocol_version") == PROTOCOL_VERSION else "FAIL", "baseline protocol version"))

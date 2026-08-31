@@ -1,4 +1,4 @@
-# Agent OS v0.5 context engineering
+# Agent OS v0.6 context engineering
 
 This policy applies Anthropic's July 2026 context-engineering guidance without
 turning “write less” into an unsafe universal rule.

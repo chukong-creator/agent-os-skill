@@ -1,0 +1,36 @@
+{
+  "agent_os_version": "0.6",
+  "work_types": [
+    "feature",
+    "bugfix",
+    "maintenance",
+    "refactor",
+    "research",
+    "release"
+  ],
+  "bugfix_requires_knowledge_assessment": true,
+  "knowledge_dispositions": [
+    "test",
+    "rule",
+    "skill",
+    "adr",
+    "none"
+  ],
+  "maintenance_delta_categories": [
+    "dependency",
+    "permission",
+    "background-work",
+    "setting-or-flag",
+    "persisted-state",
+    "external-service"
+  ],
+  "promotion_policy": {
+    "test": "Default for a reproducible behavior defect.",
+    "rule": "Use for a non-derivable product, safety, or architecture boundary.",
+    "skill": "Use for a repeatable multi-step procedure across tasks or projects.",
+    "adr": "Use for a durable structural decision and its rejected alternatives.",
+    "none": "Allowed with a concrete reason when the defect is local or non-repeatable."
+  },
+  "automatic_policy_adoption": false,
+  "semantic_conflict_resolution": "codex_or_user"
+}

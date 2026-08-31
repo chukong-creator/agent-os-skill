@@ -34,6 +34,8 @@
     "poll_seconds": 10,
     "discovery_timeout_seconds": 90,
     "builder_suspected_stall_seconds": 300,
-    "reviewer_suspected_stall_seconds": 900
+    "builder_unresponsive_seconds": 900,
+    "reviewer_suspected_stall_seconds": 900,
+    "reviewer_unresponsive_seconds": 1800
   }
 }

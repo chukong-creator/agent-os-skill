@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Acceptance tests for Agent OS v0.5 context engineering."""
+"""Regression tests for Agent OS v0.5 context engineering on v0.6."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ def test_clean_context_passes(root: Path) -> None:
         "context-doctor", str(project), "--skill", str(skill), "--strict", "--json"
     )
     report = json.loads(result.stdout)
-    assert report["agent_os_version"] == "0.5"
+    assert report["agent_os_version"] == "0.6"
     assert report["mutated"] is False
     assert report["status"] == "PASS"
     assert report["summary"]["files"] == 2
@@ -139,7 +139,7 @@ def test_v04_project_upgrades_explicitly(root: Path) -> None:
     result = call("upgrade", str(project))
     report = json.loads(result.stdout)
     assert report["from"] == "0.4"
-    assert report["to"] == "0.5"
+    assert report["to"] == "0.6"
     assert report["database_backup"]
 
 
@@ -150,7 +150,7 @@ def main() -> int:
         test_duplicates_and_budget_are_strict_warnings(root)
         test_broken_reference_fails_closed(root)
         test_v04_project_upgrades_explicitly(root)
-    print("Agent OS v0.5 context tests passed: 4 scenarios")
+    print("Agent OS v0.5 context regressions passed on v0.6: 4 scenarios")
     return 0
 
 

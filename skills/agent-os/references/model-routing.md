@@ -6,7 +6,9 @@ CC Switch is the user-owned source for Claude provider endpoints and credentials
 
 The user-level routing file is `~/.config/agent-os/model-routing.json`. It contains provider names or ids, models, effort levels, and fallback chains, but never credentials.
 
-Routing is opt-in. The presence of this file alone never authorizes provider selection or quota consumption. A Builder inherits the normal Claude environment unless Codex passes `--profile` or `--routing-config`; finite supervision starts only for an explicitly routed launch.
+Routing is opt-in. The presence of this file alone never authorizes provider selection or quota consumption. A Builder inherits the normal Claude environment unless Codex passes `--profile` or `--routing-config`. Every `agent-os claude-start` launch is supervised; explicit routing additionally enables finite provider fallback.
+
+The Claude Code shell is transport, not model identity. A Run may use Anthropic, GLM, DeepSeek, Kimi, or another configured Anthropic-compatible provider. Provider and model selection may change HOW the Builder executes, but never the Work Package, allowed paths, writer lock, evidence requirements, verification, or Codex acceptance.
 
 ## Example role chains
 
@@ -34,7 +36,7 @@ An API key or auth token must never appear in the routing file, command line, te
 
 ## Finite recovery
 
-The detached Run supervisor observes the exact Claude background session it launched.
+The detached Run supervisor observes the exact Claude background session it launched. Do not replace `agent-os claude-start` with a raw `claude -p` or `claude --background` call for governed work: raw text-mode silence is not a trustworthy activity signal and bypasses Run-level diagnosis.
 
 - `working`, `busy`, `queued`, `pending`, `blocked`, or an input-waiting state: keep waiting; these are non-terminal states. Claude reports ordinary permission prompts as `blocked`, so the Supervisor records Run-local `WAITING_FOR_PERMISSION`, preserves the same writer, surfaces `waitingFor`, suppresses stall fallback, and resumes supervision only after the prompt clears.
 - `done`: close the supervisor successfully.
@@ -48,7 +50,20 @@ After the cause is understood, Codex may run `agent-os runtime-recover <project-
 
 Fallback chains must contain unique profiles. A routing cycle records every attempted profile before launch and refuses to exceed the chain length, so a bad configuration cannot create an infinite provider loop. Startup status checks fail closed, and a per-worktree launch mutex makes the status-check plus launch operation single-writer. Once a role cycle exists, only its Supervisor may advance to the exact `next_profile` recorded in `FALLBACK_STARTING`; an external `claude-start --profile fallback` cannot bypass discovery latency.
 
-Never run two write-capable Claude sessions concurrently in one worktree. The launch mutex is keyed by the canonical worktree path, so different Runs cannot race into the same worktree. A Builder with no observed job update for five minutes is marked `SUSPECTED_STALL`; a Reviewer uses fifteen minutes. Permission waits do not become stalls. These states are observability alerts, not permission to start a second writer. Automatic fallback begins only after a terminal, explicitly classified provider/quota failure.
+Never run two write-capable Claude sessions concurrently in one worktree. The launch mutex is keyed by the canonical worktree path, so different Runs cannot race into the same worktree.
+
+Supervision has two inactivity thresholds:
+
+- Builder: `SUSPECTED_STALL` after five minutes without a job update and `UNRESPONSIVE` after fifteen minutes by default.
+- Reviewer: `SUSPECTED_STALL` after fifteen minutes and `UNRESPONSIVE` after thirty minutes by default.
+- A new job update clears either alert and records `routing_activity_resumed`.
+- Permission waits do not become stalls.
+
+`UNRESPONSIVE` means the session is still present but no longer provides evidence of progress. It requires diagnosis or an explicit stop before takeover; it never authorizes a second writer by itself. Automatic fallback begins only after a terminal, explicitly classified provider/quota or compatibility failure. The same Run, branch, worktree, and Work Package continue under the next authorized profile.
+
+`agent-os claude-status` keeps runtime health separate from implementation evidence. A responsive session with no branch commit or worktree change is `ACTIVE_NO_IMPLEMENTATION_EVIDENCE`: Claude is observably active, but the Supervisor does not claim to know whether it is reasoning, planning, or preparing a tool call. Git changes or commits move the classification to `ACTIVE_IMPLEMENTING`. A missing session with retained Git changes becomes `ORPHANED_PARTIAL_WORK`. Only a terminal failed session or a Supervisor-recorded terminal provider category becomes `PROVIDER_FAILED`.
+
+The status response also reports the observed active-session count for the whole worktree. `single_writer_preserved` is derived from that count rather than assumed. A quiet process, CPU usage, network connection, or absence of a diff is never sufficient by itself to classify a provider failure.
 
 ## Commands
 
@@ -66,6 +81,9 @@ agent-os claude-start <project-root> --run <run-id> --profile fallback
 
 # Resolve the launch without sending an API request.
 agent-os claude-start <project-root> --run <run-id> --dry-run
+
+# Separate provider health from implementation progress.
+agent-os claude-status <project-root> --run <run-id>
 ```
 
 Set `AGENT_OS_ROUTING_CONFIG` or pass `--routing-config` to use a different non-secret routing file. Use `--profile inherit` only when deliberate compatibility with the current global Claude settings is required.

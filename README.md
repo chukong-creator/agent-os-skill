@@ -5,14 +5,14 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.5 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
+  <img src="docs/assets/agent-os-badges.svg" alt="Agent OS v0.6 · Agent Shift v2 · Python 3.10+ · macOS and Linux" width="680">
 </p>
 
 <p align="center">
   <img src="docs/assets/agent-os-hero.png" alt="Agent OS：以认知中枢协调隔离执行节点，并通过证据、审查与回滚形成闭环" width="100%">
 </p>
 
-Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用的 AI 软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Outcome 与可选的有限模型兜底**，处理真正需要跨 Agent 交接、隔离、恢复、独立验收或外部发布的工作。
+Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用的 AI 软件交付机制。它用 **分级治理、Git Baseline、隔离 Worktree、Work Package、权限边界、Evidence、Project Intelligence、Outcome 与可选的有限模型兜底**，处理真正需要跨 Agent 交接、隔离、恢复、独立验收或外部发布的工作。
 
 > 本地、可逆、一个 Agent 能在当前任务完成并验证的改动，默认直接做，不启动 Agent OS。治理成本必须小于它降低的交付风险。
 
@@ -20,9 +20,9 @@ Agent OS 不是每次改代码都要启动的仪式，而是一套按需使用�
 >
 > **Claude Code** 是实现负责人：在独立 Worktree 中开发、验证和返工。
 >
-> **Git** 是版本神经系统；**Evidence** 是组织记忆；**Agent OS** 是治理与恢复层。
+> **Git** 是版本神经系统；**Evidence + Failure Corpus** 是组织记忆；**Agent OS** 是治理、学习与恢复层。
 
-当前版本：**Agent OS v0.5 + Agent Shift protocol v2**。
+当前版本：**Agent OS v0.6 + Agent Shift protocol v2**。
 
 ## 30 秒看懂
 
@@ -80,11 +80,12 @@ flowchart TD
 | **治理记账** | 自动计算时长、证据等待、验证耗时、重试与 fallback；未知 token 保持空值 | 治理系统也必须证明自己没有无限膨胀 |
 | **恢复与学习** | 精确 revert；L2 使用 Director Challenge、maturity report 与 improvement proposal | 高风险失败可恢复，下一次有依据地变好 |
 | **Context Diet** | `context-doctor` 盘点常驻上下文、重复指令、预算和断裂引用 | Agent 看到恰好够用的约束，不被历史提示词拖慢 |
+| **Project Intelligence** | Bug→Knowledge、Maintenance Delta、Failure Corpus 与 `knowledge-doctor` | 每次真实失败提高下一次正确率，而不是只留下更多规则 |
 | **验收后漂移门禁** | `doctor` 交叉检查受保护分支、tracked 工作树与已记录 merge / rollback ancestry | 防止状态显示已验收、真实仓库却已经漂移 |
 
 ### Context Diet：规则少一点，边界硬一点
 
-v0.5 将 Agent OS 主 Skill 从操作手册改成路由器：权限、密钥、决策权、精确 Commit、验收与回滚等不可推导边界始终加载；具体流程、示例、Rubric 和领域知识放入 references，只有相关任务才读取。
+v0.5 将 Agent OS 主 Skill 从操作手册改成路由器；v0.6 延续这一边界：权限、密钥、决策权、精确 Commit、验收与回滚等不可推导规则始终加载，具体流程、示例、Rubric 和领域知识按任务读取。
 
 ```bash
 agent-os context-doctor . --include-global \
@@ -92,6 +93,39 @@ agent-os context-doctor . --include-global \
 ```
 
 检查只读且不会自动删文件。断裂引用直接失败；重复规则和上下文预算超限给出警告，并在 `--strict` 下成为门禁。它不会假装能机械判断所有语义冲突：删规则前仍要确认模型能否从现场推导，以及猜错后是否一定会被测试或审查发现。
+
+### Project Intelligence：让项目本身越来越聪明
+
+v0.6 把交付治理和代码库学习连接起来，但不强制统一目录，也不要求每个任务启动五个 Agent：
+
+```mermaid
+flowchart LR
+    B["Bug"] --> R["复现 · 根因"]
+    R --> F["修复 · 精确 Commit"]
+    F --> T["回归证据 · 同类风险搜索"]
+    T --> K{"知识去向"}
+    K -->|默认| UT["Test"]
+    K --> RU["Rule"]
+    K --> SK["Skill"]
+    K --> ADR["ADR"]
+    K --> NC["No durable change + reason"]
+    UT --> C["Failure Corpus"]
+    RU --> C
+    SK --> C
+    ADR --> C
+    NC --> C
+    C --> N["下一次 Work Package"]
+```
+
+Bug 修复在 `package-create` 时声明 `--work-type bugfix` 和可复现症状；PASS Evidence 后运行 `knowledge-record`。行为问题默认进入回归测试；只有不可从代码推导的产品/安全边界才升级为 Rule，可重复的跨任务流程才成为 Skill，结构性取舍进入 ADR。局部、不可重复的问题允许 `none`，但必须解释。
+
+任何新增依赖、权限、后台任务、设置项、持久化状态或外部服务都通过 `--maintenance-delta "类别::说明"` 显式声明负责人、必要性、移除条件与回滚路径。它不禁止复杂度，但禁止复杂度悄悄进入系统。
+
+```bash
+agent-os knowledge-doctor . --strict
+```
+
+该只读检查验证架构/知识源、验证日期、项目验证入口和 Failure Corpus 结构；它不会擅自裁决语义冲突或删除历史规则。
 
 ### 三种治理通道
 
@@ -421,7 +455,12 @@ flowchart LR
 - 明确 quota、429、余额不足或 Provider 终态错误，才进入有限 fallback 链。
 - 每个 profile 在一个角色周期内最多尝试一次；链耗尽后进入 `RUNTIME_FAILED`。
 - 未知错误不会盲目切模型。
-- Builder 连续 5 分钟、Reviewer 连续 15 分钟没有 job update 时标记 `SUSPECTED_STALL`，但不会在旧 writer 仍活跃时启动第二个 writer。
+- `agent-os claude-start` 对继承的当前模型以及显式选择的 GLM、DeepSeek、Kimi、Anthropic 等 profile 使用同一执行契约；模型切换不改变 Work Package、路径权限、worktree、验证和验收。
+- Builder 连续 5 分钟无 job update 时标记 `SUSPECTED_STALL`，15 分钟时标记 `UNRESPONSIVE`；Reviewer 默认为 15/30 分钟。活动恢复会自动清除告警并留下事件。权限等待不计作停滞。
+- `UNRESPONSIVE` 会及时暴露真实无响应，但不会在旧 writer 仍存在时启动第二个 writer；必须先确认终止或显式停止旧会话，再恢复或接管。
+- 受治理任务不要直接运行 `claude -p` 或 `claude --background`。默认 text 模式的 stdout 沉默不是进度证据，也会绕过 Run 监督。
+- `claude-status` 分开报告运行健康和 Git 实现证据：活跃但尚无 diff/commit 为 `ACTIVE_NO_IMPLEMENTATION_EVIDENCE`，出现代码证据为 `ACTIVE_IMPLEMENTING`，会话消失但保留局部改动为 `ORPHANED_PARTIAL_WORK`。`single_writer_preserved` 来自 worktree 的实时会话计数，不再是固定声明。
+- Agent Shift doctor 会检查记录的 Agent worktree；实现中但没有活跃 Claude、同一 worktree 有多个会话，或 Codex 子代理被误记为 Claude，都会失败并保留现场供恢复。
 
 ## 高风险 Agent 必须回答的五个问题
 
@@ -496,7 +535,7 @@ git pull --ff-only
 agent-os upgrade /path/to/project
 ```
 
-安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2 / v0.3 / v0.4 项目迁移到 v0.5，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
+安装使用符号链接，拉取后即可更新 Skill。`agent-os upgrade` 会显式把 v0.2–v0.5 项目迁移到 v0.6，先备份 SQLite，并在有活动写锁时拒绝升级。升级前应阅读 diff，并在一个可回滚项目上 canary 验证。
 
 安全卸载：
 
@@ -512,6 +551,7 @@ cd agent-os-skill
 ```bash
 python3 skills/agent-shift/scripts/test_agent_shift_views.py
 python3 skills/agent-os/scripts/test_agent_os_routing.py
+python3 skills/agent-os/scripts/test_agent_os_v06.py
 python3 skills/agent-os/scripts/test_agent_os_v05.py
 python3 skills/agent-os/scripts/test_agent_os_v04.py
 python3 skills/agent-os/scripts/test_agent_os_v03.py
@@ -523,12 +563,12 @@ python3 skills/agent-os/scripts/test_agent_os_v03.py
 
 ## English overview
 
-**Agent OS v0.5 turns Codex, Claude Code, and Git into an observable, context-efficient, proportionally governed, outcome-aware, and recoverable AI software team.**
+**Agent OS v0.6 turns Codex, Claude Code, and Git into an observable, context-efficient, self-improving, outcome-aware, and recoverable AI software team.**
 
 - **Codex Director** owns mission alignment, scope, acceptance criteria, findings, merge authority, and final delivery decisions.
 - **Claude Builder** owns implementation and ordinary rework inside an isolated Git worktree.
 - **Agent Shift** provides exact baselines, protected branches, worktree isolation, observable handoffs, and merge gates.
-- **Agent OS** adds Work Packages, permission manifests, single-writer locks, exact-commit evidence, mechanical evidence verification, optional read-only review, five-question maturity reports, finite model fallback, safe rollback, and learning proposals.
+- **Agent OS** adds Work Packages, permission manifests, single-writer locks, exact-commit evidence, mechanical verification, Bug-to-Knowledge, maintenance-cost declarations, knowledge audits, optional read-only review, finite model fallback, safe rollback, and outcome learning.
 
 Quick start:
 
