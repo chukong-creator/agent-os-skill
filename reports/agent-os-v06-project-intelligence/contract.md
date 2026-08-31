@@ -83,20 +83,21 @@ auditable, and the Agent OS repository is re-verified in clean GitHub runners.
 
 ## Mutable implementation checklist
 
-- [ ] Add v0.6 schema, package fields, knowledge assessment, and audit command.
-- [ ] Add regression tests and GitHub Actions.
-- [ ] Update Skill, references, README, examples, and release visuals.
-- [ ] Install and canary the Skill, then migrate three enrolled control roots.
-- [ ] Record evidence, review, merge, push, and verify remote HEAD/content.
+- [x] Add v0.6 schema, package fields, knowledge assessment, and audit command.
+- [x] Add regression tests and GitHub Actions.
+- [x] Update Skill, references, README, examples, and release visuals.
+- [x] Canary the Skill and migrate three enrolled control roots.
+- [ ] Record evidence, review, merge, install, push, and verify remote HEAD/content.
 
 ## Evidence log
 
 | Time | Classification | Command or action | Exit status | Observation | Artifact |
 |---|---|---|---|---|---|
 | 2026-08-31 19:13 +0800 | verified | live project doctors and Git status inspection | mixed | Vitality clean; Understand Things has preserved untracked material; World Now has pre-existing tracked drift; Agent OS has no workflow | this contract |
+| 2026-08-31 19:44 +0800 | verified | v0.3-v0.6, routing, Agent Shift, compile, context and install regressions | 0 | all local suites and strict context audit passed | `evidence.md` |
+| 2026-08-31 19:53 +0800 | verified | migrate and audit all enrolled control roots | mixed by design | Vitality and Understand Things are clean; World Now retains only pre-existing README drift | `evidence.md` |
 
 ## Contract changes
 
 | Time | Change | Trigger | Reason | User confirmation or direct evidence |
 |---|---|---|---|---|
-

@@ -1580,6 +1580,10 @@ def cmd_upgrade(args: argparse.Namespace) -> int:
     intelligence_config.setdefault("freshness_days", 180)
     atomic_json(config_path, config)
     corpus = resolved_project_source(root, str(intelligence_config["failure_corpus_path"]))
+    try:
+        corpus.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("failure_corpus_path must stay inside the control root") from exc
     if not corpus.exists():
         atomic_json(corpus, {"agent_os_version": AGENT_OS_VERSION, "entries": []})
     adapters: list[str] = []
