@@ -2389,8 +2389,9 @@ def cmd_claude_start(args: argparse.Namespace) -> int:
     if row["status"] not in allowed_statuses:
         raise ValueError(f"claude-start {mode} profile requires {sorted(allowed_statuses)}, found {row['status']}")
     executable = shutil.which("claude")
-    if not executable:
+    if not executable and not args.dry_run:
         raise FileNotFoundError("claude executable not found")
+    executable = executable or "claude"
     worktree = Path(str(row["worktree"]))
     contract = load_package(root, str(row["package_id"]))
     unit = work_unit(root, str(contract["work_unit"]))

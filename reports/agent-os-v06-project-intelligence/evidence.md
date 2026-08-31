@@ -58,3 +58,9 @@ while allowing an idle or terminal repository to be audited without installing
 an unused execution provider. A new regression test and a v0.4 run with Claude
 removed from `PATH` pass locally. The workflow also uses the current Node 24
 GitHub Actions releases.
+
+The second run (`33391723144`) passed the v0.4 clean audit and exposed the same
+assumption in the legacy v0.3 routing dry-run. `claude-start --dry-run` now
+resolves and sanitizes the launch plan without an installed executable, while
+the paired real-start check still fails closed. The explicit no-Claude v0.3
+integration scenario and routing suite pass locally.

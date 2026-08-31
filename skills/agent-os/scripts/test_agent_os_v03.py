@@ -157,10 +157,18 @@ def test_delivery_and_rollback(parent: Path) -> None:
     commit(root, "plan: approve wp-001")
     started = json.loads(call([AGENT_OS, "run-start", str(root), "--package", "wp-001", "--run", "run-001", "--agent", "claude"], root))
     worktree = Path(started["worktree"])
-    launch = call([AGENT_OS, "claude-start", str(root), "--run", "run-001", "--routing-config", str(route_config), "--dry-run"], root)
+    no_claude = os.environ.copy()
+    no_claude["PATH"] = os.pathsep.join(
+        item for item in no_claude.get("PATH", "").split(os.pathsep)
+        if item and not (Path(item) / "claude").exists()
+    )
+    launch_command = [AGENT_OS, "claude-start", str(root), "--run", "run-001", "--routing-config", str(route_config)]
+    launch = call([*launch_command, "--dry-run"], root, env=no_claude)
     launch_metadata = json.loads(launch)
     assert launch_metadata["result"] == "DRY_RUN" and launch_metadata["profile"] == "builder" and launch_metadata["model"] == "builder-model"
     assert "must-not-appear" not in launch
+    missing_executor = call(launch_command, root, expected=2, env=no_claude)
+    assert "claude executable not found" in missing_executor
     for filename in ("decision-trace.json", "permission-manifest.json", "rollback-plan.json"):
         assert (root / ".agent-os/runs/run-001" / filename).is_file()
 
