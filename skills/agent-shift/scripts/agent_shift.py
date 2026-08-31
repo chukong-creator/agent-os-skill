@@ -388,6 +388,14 @@ def check_claude_sessions(root: Path) -> tuple[str, str]:
     return level, message
 
 
+def check_claude_capability(root: Path, state: dict[str, Any] | None) -> tuple[str, str]:
+    level, message = check_claude_sessions(root)
+    active = bool(state and state.get("status") in {"CLAUDE_IMPLEMENTING", "CLAUDE_REWORK"})
+    if level == "FAIL" and message == "claude executable not found" and not active:
+        return "PASS", "claude executable not found; no active Claude execution requires it"
+    return level, message
+
+
 def evaluate_active_execution(
     state: dict[str, Any], sessions: list[dict[str, Any]], worktree_dirty: bool,
 ) -> tuple[str, str]:
@@ -564,7 +572,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             for blocker in config.get("known_blockers", []):
                 checks.append(("WARN", f"known blocker: {blocker}"))
 
-    checks.append(check_claude_sessions(root))
+    checks.append(check_claude_capability(root, state))
     for level, message in checks:
         print(f"{level:4} {message}")
     failures = sum(level == "FAIL" for level, _ in checks)

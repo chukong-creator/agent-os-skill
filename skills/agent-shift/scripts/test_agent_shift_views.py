@@ -99,6 +99,19 @@ class WorkQueueViewTests(unittest.TestCase):
             self.assertEqual(result, ("PASS", "active Claude state has exactly one live worktree session"))
             query.assert_called_once_with(worktree)
 
+    def test_terminal_doctor_does_not_require_claude_executable(self) -> None:
+        terminal = self.state(status="ACCEPTED", owner="codex")
+        with mock.patch.object(agent_shift.shutil, "which", return_value=None):
+            result = agent_shift.check_claude_capability(Path("/tmp/project"), terminal)
+        self.assertEqual(
+            result,
+            ("PASS", "claude executable not found; no active Claude execution requires it"),
+        )
+
+        with mock.patch.object(agent_shift.shutil, "which", return_value=None):
+            active = agent_shift.check_claude_capability(Path("/tmp/project"), self.state())
+        self.assertEqual(active, ("FAIL", "claude executable not found"))
+
 
 if __name__ == "__main__":
     unittest.main()

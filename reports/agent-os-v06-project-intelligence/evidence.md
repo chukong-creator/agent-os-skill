@@ -48,3 +48,13 @@ credential, or external service was changed.
 - World Now is intentionally not reported as clean. Its known `README.md` drift
   predates this upgrade and remains blocked by the post-acceptance drift gate.
 
+## Clean-runner finding
+
+The first GitHub Actions run (`33391267659`) correctly failed all four matrix
+jobs because the terminal-state doctor treated a missing Claude executable as
+an integrity failure. Local machines with Claude installed had hidden this
+environment assumption. The correction keeps active Claude Runs fail-closed,
+while allowing an idle or terminal repository to be audited without installing
+an unused execution provider. A new regression test and a v0.4 run with Claude
+removed from `PATH` pass locally. The workflow also uses the current Node 24
+GitHub Actions releases.
